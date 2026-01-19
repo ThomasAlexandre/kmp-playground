@@ -1,0 +1,7 @@
+TEAM_ID=
+
+PRODUCT_NAME=kmp_playground
+PRODUCT_BUNDLE_IDENTIFIER=se.ac.kmp_playground.kmp_playground$(TEAM_ID)
+
+CURRENT_PROJECT_VERSION=1
+MARKETING_VERSION=1.0

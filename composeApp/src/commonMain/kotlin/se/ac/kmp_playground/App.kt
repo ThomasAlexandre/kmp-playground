@@ -77,7 +77,6 @@ val productPrices: Map<String, Map<String, Double>> = mapOf(
 @Preview
 fun App() {
     MaterialTheme {
-        var showContent by remember { mutableStateOf(false) }
         val tabs = listOf("Home", "Search", "Profile")
         var selectedTabIndex by rememberSaveable { mutableIntStateOf(0) }
         var selectedSupermarkets by rememberSaveable { mutableStateOf(setOf<String>()) }
@@ -89,19 +88,6 @@ fun App() {
                 .fillMaxSize(),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Button(onClick = { showContent = !showContent }) {
-                Text("Click me!")
-            }
-            AnimatedVisibility(showContent) {
-                val greeting = remember { Greeting().greet() }
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Image(painterResource(Res.drawable.compose_multiplatform), null)
-                    Text("Compose: $greeting")
-                }
-            }
             Column {
                 SecondaryTabRow(
                     selectedTabIndex = selectedTabIndex
@@ -133,6 +119,7 @@ fun ProfileTab(
     selectedSupermarkets: Set<String>,
     onSelectionChanged: (Set<String>) -> Unit
 ) {
+    var showContent by remember { mutableStateOf(false) }
     val selectionCount = selectedSupermarkets.size
     val isValidSelection = selectionCount in 1..5
 
@@ -141,6 +128,19 @@ fun ProfileTab(
             .fillMaxWidth()
             .padding(16.dp)
     ) {
+        Button(onClick = { showContent = !showContent }) {
+            Text("Select on Map!")
+        }
+        AnimatedVisibility(showContent) {
+            val greeting = remember { Greeting().greet() }
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Image(painterResource(Res.drawable.compose_multiplatform), null)
+                Text("Compose: $greeting")
+            }
+        }
         Text(
             text = "Select Your Supermarkets",
             style = MaterialTheme.typography.titleLarge

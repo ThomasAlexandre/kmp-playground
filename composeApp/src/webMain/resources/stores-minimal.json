@@ -1,0 +1,37 @@
+{
+  "stores": [
+    {
+      "id": 4933,
+      "key": "b2287e43-d194-4619-8408-ba86d231a7df",
+      "name": "ICA Maxi Bromma",
+      "lon": 17.95541,
+      "lat": 59.353082,
+      "address": "Köpsvägen 4",
+      "postalCode": "16867",
+      "city": "Bromma",
+      "imageUrl": "https://mpk-app.s3.eu-north-1.amazonaws.com/store-logos/maxi_ica_stormarknad.png"
+    },
+    {
+      "id": 675,
+      "key": "62a8d5a5-d672-48d9-a66b-2177f45993bd",
+      "name": "ICA Supermarket Brommaplan",
+      "lon": 17.9389058,
+      "lat": 59.3384163,
+      "address": "Tunnlandet 1-3",
+      "postalCode": "16836",
+      "city": "Bromma",
+      "imageUrl": "https://mpk-app.s3.eu-north-1.amazonaws.com/store-logos/ica_supermarket.png"
+    },
+    {
+      "id": 1709,
+      "key": "2b1b62ef-5ba7-451c-992b-4f0e9f9267b2",
+      "name": "Coop Engströms Livs Nockeby",
+      "lon": 17.9284333,
+      "lat": 59.3285183,
+      "address": "Nockeby Torg 1",
+      "postalCode": "16474",
+      "city": "Bromma",
+      "imageUrl": "https://mpk-app.s3.eu-north-1.amazonaws.com/store-logos/coop.png"
+    }
+  ]
+}

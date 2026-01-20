@@ -1,0 +1,4 @@
+run stores.deployLocal
+update
+project.create kmp-playground
+projects

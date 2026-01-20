@@ -102,3 +102,69 @@ Use this agent for managing string resource translations across multiple languag
 - Maintain line breaks (`\n`) and special characters
 - Keep consistent structure across all language files
 - Update English source first, then run translation updates
+
+## About This Repository
+This repository also contains resources for a backend written in the unison language. All Unison services and resources will as well as the scratch.u file will be listed under the ./unison subdirectory
+
+## Unison Language Reference
+
+The comprehensive language guide is at `knowledge-base/unison-language-guide.md`. Key points:
+
+### Syntax Rules (Critical)
+- No pattern matching to the left of `=` - always use `match ... with` or `cases`
+- No `let` keyword - just write `name = expression`
+- No `where` clauses - define helpers before using them
+- No string interpolation - use `Text.++` for concatenation
+- Use `None`/`Some` (not `Nothing`/`Just` like Haskell)
+
+### Lists
+- Lists are finger trees with O(1) append: use `:+` to append, `+:` to prepend
+- Build lists in order using `:+`, never build in reverse and call `List.reverse`
+- Always use tail recursion with accumulating parameters for list operations
+
+### Abilities (Effects)
+- Effects are declared in type signatures: `'{IO, Exception} ()` or `{g, Remote}`
+- Make higher-order functions ability-polymorphic: `(a ->{g} b)` not `(a -> b)`
+- Handlers use `handle ... with cases` pattern
+
+### Style
+- Use `cases` instead of `match x with` when pattern matching on last argument
+- Name recursive helpers `go` or `loop`
+- Use short names: `acc`, `rem`, `f`, `g`
+- Tests must be named `<function-name>.tests.<test-name>`
+
+## Service Architecture Pattern
+
+A typical service follows this structure:
+
+```unison
+-- 1. Define types
+type EntityId = Id Text
+unique type Entity = { field1 : Text, field2 : Nat }
+
+-- 2. Define storage ability
+ability EntityStorage where
+  get : EntityId ->{EntityStorage} Optional Entity
+  upsert : Entity ->{EntityStorage} ()
+  getAll : '{EntityStorage} [Entity]
+
+-- 3. Implement handler with OrderedTable
+EntityStorage.run : Database -> '{g, EntityStorage} a ->{g, Remote} a
+EntityStorage.run db p =
+  table = OrderedTable.named db "entities" Universal.ordering
+  -- handler implementation with cases
+
+-- 4. Define routes
+entity.routes : '{Route, Exception, EntityStorage, Log} ()
+
+-- 5. Main entry point
+main.main : Database -> HttpRequest -> {Exception, Storage, Remote, Log} HttpResponse
+main.main db req = EntityStorage.run db do Route.run entity.routes req
+```
+
+## Deployment
+
+Services can be deployed to local, staging, or production environments:
+- `deploy.deployLocal` - local development with `main.local.serve`
+- `deploy.deployStage` - staging with named environment
+- `deploy.deployProd` - production with `Environment.default()`

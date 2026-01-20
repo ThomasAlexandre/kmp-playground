@@ -1,0 +1,161 @@
+-- Store CRUD API
+-- A simple HTTP API for managing supermarket stores
+
+use lib.unison_cloud_27_2_0
+use lib.unison_routes_7_0_2
+use lib.unison_json_1_3_5
+
+-- Store type matching the JSON structure
+unique type Store = {
+  id : Nat,
+  key : Text,
+  name : Text,
+  lon : Float,
+  lat : Float,
+  address : Text,
+  postalCode : Text,
+  city : Text,
+  imageUrl : Text
+}
+
+-- StoreId for key lookups
+unique type StoreId = StoreId Nat
+
+StoreId.toNat : StoreId -> Nat
+StoreId.toNat = cases StoreId n -> n
+
+-- JSON Encoder for Store
+Store.toJson : Store -> Json
+Store.toJson store =
+  use Json.object
+  empty
+    |> addNat "id" (Store.id store)
+    |> addText "key" (Store.key store)
+    |> addText "name" (Store.name store)
+    |> addFloat "lon" (Store.lon store)
+    |> addFloat "lat" (Store.lat store)
+    |> addText "address" (Store.address store)
+    |> addText "postalCode" (Store.postalCode store)
+    |> addText "city" (Store.city store)
+    |> addText "imageUrl" (Store.imageUrl store)
+
+-- JSON Decoder for Store
+Store.decoder : '{Decoder} Store
+Store.decoder = do
+  use Decoder.object at!
+  id = at! "id" Decoder.nat
+  key = at! "key" Decoder.text
+  name = at! "name" Decoder.text
+  lon = at! "lon" Decoder.float
+  lat = at! "lat" Decoder.float
+  address = at! "address" Decoder.text
+  postalCode = at! "postalCode" Decoder.text
+  city = at! "city" Decoder.text
+  imageUrl = at! "imageUrl" Decoder.text
+  Store id key name lon lat address postalCode city imageUrl
+
+-- CRUD Ability for Store operations
+ability StoreStorage where
+  get : StoreId ->{StoreStorage} Optional Store
+  upsert : Store ->{StoreStorage} ()
+  delete : StoreId ->{StoreStorage} ()
+  getAll : '{StoreStorage} [Store]
+
+-- Handler implementation using OrderedTable
+StoreStorage.run : Database -> '{g, StoreStorage} a ->{g, Remote} a
+StoreStorage.run db computation =
+  table : OrderedTable Nat Store
+  table = OrderedTable.named db "stores" Universal.ordering
+
+  go : Request {StoreStorage} a ->{g, Remote} a
+  go = cases
+    { a } -> a
+    { StoreStorage.get (StoreId storeId) -> resume } ->
+      result = OrderedTable.tryRead table storeId
+      handle resume result with go
+    { StoreStorage.upsert store -> resume } ->
+      OrderedTable.write table (Store.id store) store
+      handle resume () with go
+    { StoreStorage.delete (StoreId storeId) -> resume } ->
+      OrderedTable.delete table storeId
+      handle resume () with go
+    { StoreStorage.getAll () -> resume } ->
+      stores = Stream.toList (OrderedTable.toStream table) |> List.map (Tuple.at2)
+      handle resume stores with go
+
+  handle computation() with go
+
+-- HTTP Routes
+stores.routes : '{Route, Exception, StoreStorage, Log} ()
+stores.routes =
+  use Parser /
+  use Text ++
+  use Route <|>
+
+  -- Health check
+  health = do
+    noCapture GET (s "health")
+    ok.text "ok"
+
+  -- GET /stores - Get all stores
+  getAllStores = do
+    noCapture GET (s "stores")
+    info "Getting all stores" []
+    stores = StoreStorage.getAll()
+    json = Json.array (List.map Store.toJson stores)
+    ok.json json
+
+  -- GET /stores/<id> - Get store by ID
+  getStoreById = do
+    storeId = route GET (s "stores" / Parser.nat)
+    info "Getting store" [("id", Nat.toText storeId)]
+    match StoreStorage.get (StoreId storeId) with
+      Some store -> ok.json (Store.toJson store)
+      None -> notFound.text ("Store not found: " ++ Nat.toText storeId)
+
+  -- POST /stores - Create a new store
+  createStore = do
+    noCapture POST (s "stores")
+    store = decodeJson Store.decoder
+    info "Creating store" [("id", Nat.toText (Store.id store))]
+    StoreStorage.upsert store
+    setStatus (Status 201 "Created")
+    ok.json (Store.toJson store)
+
+  -- PUT /stores/<id> - Update a store
+  updateStore = do
+    storeId = route PUT (s "stores" / Parser.nat)
+    store = decodeJson Store.decoder
+    info "Updating store" [("id", Nat.toText storeId)]
+    match StoreStorage.get (StoreId storeId) with
+      Some _ ->
+        updatedStore = Store storeId (Store.key store) (Store.name store) (Store.lon store) (Store.lat store) (Store.address store) (Store.postalCode store) (Store.city store) (Store.imageUrl store)
+        StoreStorage.upsert updatedStore
+        ok.json (Store.toJson updatedStore)
+      None -> notFound.text ("Store not found: " ++ Nat.toText storeId)
+
+  -- DELETE /stores/<id> - Delete a store
+  deleteStore = do
+    storeId = route DELETE (s "stores" / Parser.nat)
+    info "Deleting store" [("id", Nat.toText storeId)]
+    match StoreStorage.get (StoreId storeId) with
+      Some _ ->
+        StoreStorage.delete (StoreId storeId)
+        ok.text "Deleted"
+      None -> notFound.text ("Store not found: " ++ Nat.toText storeId)
+
+  health <|> getAllStores <|> getStoreById <|> createStore <|> updateStore <|> deleteStore
+
+-- Main entry point for handling HTTP requests
+stores.main : Database -> HttpRequest ->{Exception, Storage, Remote, Log} HttpResponse
+stores.main db req = StoreStorage.run db do Route.run stores.routes req
+
+-- Local deployment
+stores.deployLocal : '{IO, Exception} URI
+stores.deployLocal = main.local.serve do
+  env = Environment.default()
+  db = Database.named "stores-db"
+  Database.assign db env
+  hash = deployHttp env (stores.main db)
+  name = ServiceName.named "stores-api"
+  ServiceName.assign name hash

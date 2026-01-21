@@ -144,7 +144,7 @@ stores.routes =
         ok.text "Deleted"
       None -> notFound.text ("Store not found: " ++ Nat.toText storeId)
 
-  health <|> getAllStores <|> getStoreById <|> createStore <|> updateStore <|> deleteStore
+  health <|> getStoreById <|> getAllStores <|> createStore <|> updateStore <|> deleteStore
 
 -- Main entry point for handling HTTP requests
 stores.main : Database -> HttpRequest ->{Exception, Storage, Remote, Log} HttpResponse

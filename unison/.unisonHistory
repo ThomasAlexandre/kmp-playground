@@ -1,3 +1,6 @@
+update
+auth.login
+update
 run products.deployLocal
 update
 run stores.deployLocal

@@ -1,154 +1,37 @@
 use lib.unison_cloud_27_2_0
+use lib.unison_cloud_27_2_0.lib.unison_http_14_0_0
 use lib.unison_routes_7_0_2
 use lib.unison_json_1_3_5
 
--- ============================================================================
--- Product CRUD API
--- A simple HTTP API for managing products
--- ============================================================================
+-- Add CORS headers to a response (for stores)
+stores.addCorsHeaders : HttpResponse -> HttpResponse
+stores.addCorsHeaders response =
+  response
+    |> HttpResponse.addHeader "Access-Control-Allow-Origin" "*"
+    |> HttpResponse.addHeader "Access-Control-Allow-Methods" "GET, POST, PUT, DELETE, OPTIONS"
+    |> HttpResponse.addHeader "Access-Control-Allow-Headers" "Content-Type, Authorization"
 
--- Product type matching the minimal JSON structure
-unique type Product = {
-  barcode : Text,
-  productName : Text,
-  brands : Text,
-  productImageUrl : Text,
-  productStores : Optional Text
-}
+-- Check if request is OPTIONS method (for stores)
+stores.isOptionsMethod : HttpRequest -> Boolean
+stores.isOptionsMethod req =
+  match HttpRequest.method req with
+    OPTIONS -> true
+    _ -> false
 
--- ProductCode for key lookups
-unique type ProductCode = ProductCode Text
+-- CORS-enabled main entry point for stores
+stores.mainWithCors : Database -> HttpRequest ->{Exception, Storage, Remote, Log} HttpResponse
+stores.mainWithCors db req =
+  if stores.isOptionsMethod req then
+    stores.addCorsHeaders (HttpResponse.ok Body.empty)
+  else stores.addCorsHeaders (stores.main db req)
 
-ProductCode.toText : ProductCode -> Text
-ProductCode.toText = cases ProductCode c -> c
-
--- JSON Encoder for Product
-Product.toJson : Product -> Json
-Product.toJson product =
-  use Json.object
-  base =
-    empty
-      |> addText "code" (Product.barcode product)
-      |> addText "product_name" (Product.productName product)
-      |> addText "brands" (Product.brands product)
-      |> addText "image_url" (Product.productImageUrl product)
-  match Product.productStores product with
-    Some s -> base |> addText "stores" s
-    None -> base |> add "stores" Json.null
-
--- JSON Decoder for Product
-Product.decoder : '{Decoder} Product
-Product.decoder = do
-  use Decoder.object at! optionalAt!
-  code = at! "code" Decoder.text
-  productName = at! "product_name" Decoder.text
-  brands = at! "brands" Decoder.text
-  imageUrl = at! "image_url" Decoder.text
-  stores = optionalAt! "stores" Decoder.text
-  Product code productName brands imageUrl stores
-
--- CRUD Ability for Product operations
-ability ProductStorage where
-  getProduct : ProductCode ->{ProductStorage} Optional Product
-  upsertProduct : Product ->{ProductStorage} ()
-  deleteProduct : ProductCode ->{ProductStorage} ()
-  getAllProducts : '{ProductStorage} [Product]
-
--- Handler implementation using OrderedTable
-ProductStorage.run : Database -> '{g, ProductStorage} a ->{g, Remote} a
-ProductStorage.run db computation =
-  table : OrderedTable Text Product
-  table = OrderedTable.named db "products" Universal.ordering
-
-  go : Request {ProductStorage} a ->{g, Remote} a
-  go = cases
-    { a } -> a
-    { ProductStorage.getProduct (ProductCode productCode) -> resume } ->
-      result = OrderedTable.tryRead table productCode
-      handle resume result with go
-    { ProductStorage.upsertProduct product -> resume } ->
-      OrderedTable.write table (Product.barcode product) product
-      handle resume () with go
-    { ProductStorage.deleteProduct (ProductCode productCode) -> resume } ->
-      OrderedTable.delete table productCode
-      handle resume () with go
-    { ProductStorage.getAllProducts () -> resume } ->
-      products = Stream.toList (OrderedTable.toStream table) |> List.map (Tuple.at2)
-      handle resume products with go
-
-  handle computation() with go
-
--- HTTP Routes for Products
-products.routes : '{Route, Exception, ProductStorage, Log} ()
-products.routes =
-  use Parser /
-  use Text ++
-  use Route <|>
-
-  -- Health check
-  health = do
-    noCapture GET (s "health")
-    ok.text "ok"
-
-  -- GET /products - Get all products
-  getAllProducts = do
-    noCapture GET (s "products")
-    info "Getting all products" []
-    products = ProductStorage.getAllProducts()
-    json = Json.array (List.map Product.toJson products)
-    ok.json json
-
-  -- GET /products/<code> - Get product by code
-  getProductByCode = do
-    productCode = route GET (s "products" / Parser.text)
-    info "Getting product" [("code", productCode)]
-    match ProductStorage.getProduct (ProductCode productCode) with
-      Some product -> ok.json (Product.toJson product)
-      None -> notFound.text ("Product not found: " ++ productCode)
-
-  -- POST /products - Create a new product
-  createProduct = do
-    noCapture POST (s "products")
-    product = decodeJson Product.decoder
-    info "Creating product" [("code", Product.barcode product)]
-    ProductStorage.upsertProduct product
-    setStatus (Status 201 "Created")
-    ok.json (Product.toJson product)
-
-  -- PUT /products/<code> - Update a product
-  updateProduct = do
-    productCode = route PUT (s "products" / Parser.text)
-    product = decodeJson Product.decoder
-    info "Updating product" [("code", productCode)]
-    match ProductStorage.getProduct (ProductCode productCode) with
-      Some _ ->
-        updatedProduct = Product productCode (Product.productName product) (Product.brands product) (Product.productImageUrl product) (Product.productStores product)
-        ProductStorage.upsertProduct updatedProduct
-        ok.json (Product.toJson updatedProduct)
-      None -> notFound.text ("Product not found: " ++ productCode)
-
-  -- DELETE /products/<code> - Delete a product
-  deleteProduct = do
-    productCode = route DELETE (s "products" / Parser.text)
-    info "Deleting product" [("code", productCode)]
-    match ProductStorage.getProduct (ProductCode productCode) with
-      Some _ ->
-        ProductStorage.deleteProduct (ProductCode productCode)
-        ok.text "Deleted"
-      None -> notFound.text ("Product not found: " ++ productCode)
-
-  health <|> getProductByCode <|> getAllProducts <|> createProduct <|> updateProduct <|> deleteProduct
-
--- Main entry point for handling HTTP requests
-products.main : Database -> HttpRequest ->{Exception, Storage, Remote, Log} HttpResponse
-products.main db req = ProductStorage.run db do Route.run products.routes req
-
--- Local deployment for Products API
-products.deployLocal : '{IO, Exception} URI
-products.deployLocal = main.local.serve do
+-- Cloud deployment for Stores API
+stores.deployCloud : '{IO, Exception} ServiceHash HttpRequest HttpResponse
+stores.deployCloud = Cloud.main do
   env = Environment.default()
-  db = Database.named "products-db"
+  db = Database.named "stores-db"
   Database.assign db env
-  hash = deployHttp env (products.main db)
-  name = ServiceName.named "products-api"
-  ServiceName.assign name hash
+  hash = deployHttp env (stores.mainWithCors db)
+  name = ServiceName.named "stores-api"
+  _ = ServiceName.assign name hash
+  hash

@@ -1,3 +1,4 @@
+
 #!/bin/bash
 
 # Seed products from converted JSON files to the local Products API

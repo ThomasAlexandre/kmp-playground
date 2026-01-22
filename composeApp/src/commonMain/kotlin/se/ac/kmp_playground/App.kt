@@ -4,12 +4,14 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeContentPadding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
@@ -23,19 +25,12 @@ import kmp_playground.composeapp.generated.resources.Res
 import kmp_playground.composeapp.generated.resources.compose_multiplatform
 import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.compose.ui.tooling.preview.Preview
-
-val availableSupermarkets = listOf(
-    "Lidl",
-    "Aldi",
-    "Whole Foods",
-    "Trader Joe's",
-    "Kroger",
-    "Safeway",
-    "Costco",
-    "Walmart",
-    "Target",
-    "Publix"
-)
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import se.ac.kmp_playground.data.Product
+import se.ac.kmp_playground.data.ProductRepository
+import se.ac.kmp_playground.data.Store
+import se.ac.kmp_playground.data.StoreRepository
 
 val shoppingListItems = listOf(
     "Milk", "Bread", "Eggs", "Butter", "Cheese",
@@ -117,11 +112,20 @@ fun App() {
 @Composable
 fun ProfileTab(
     selectedSupermarkets: Set<String>,
-    onSelectionChanged: (Set<String>) -> Unit
+    onSelectionChanged: (Set<String>) -> Unit,
+    repository: StoreRepository = remember { StoreRepository() }
 ) {
     var showContent by remember { mutableStateOf(false) }
+    var storesUiState by remember { mutableStateOf<StoresUiState>(StoresUiState.Loading) }
+    val scope = rememberCoroutineScope()
     val selectionCount = selectedSupermarkets.size
     val isValidSelection = selectionCount in 1..5
+
+    LaunchedEffect(Unit) {
+        repository.getAllStores()
+            .onSuccess { stores -> storesUiState = StoresUiState.Success(stores) }
+            .onFailure { error -> storesUiState = StoresUiState.Error(error.message ?: "Unknown error") }
+    }
 
     Column(
         modifier = Modifier
@@ -156,80 +160,117 @@ fun ProfileTab(
             modifier = Modifier.padding(vertical = 8.dp)
         )
 
-        LazyColumn(
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            items(availableSupermarkets) { supermarket ->
-                val isSelected = supermarket in selectedSupermarkets
-                val canSelect = selectionCount < 5 || isSelected
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
+        when (val state = storesUiState) {
+            is StoresUiState.Loading -> {
+                Box(
+                    modifier = Modifier.fillMaxWidth().padding(32.dp),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Checkbox(
-                        checked = isSelected,
-                        onCheckedChange = { checked ->
-                            val newSelection = if (checked && canSelect) {
-                                selectedSupermarkets + supermarket
-                            } else {
-                                selectedSupermarkets - supermarket
+                    CircularProgressIndicator()
+                }
+            }
+            is StoresUiState.Error -> {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer
+                    )
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = "Failed to load stores",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Text(
+                            text = state.message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Button(
+                            onClick = {
+                                storesUiState = StoresUiState.Loading
+                                scope.launch {
+                                    repository.getAllStores()
+                                        .onSuccess { stores -> storesUiState = StoresUiState.Success(stores) }
+                                        .onFailure { error -> storesUiState = StoresUiState.Error(error.message ?: "Unknown error") }
+                                }
+                            },
+                            modifier = Modifier.padding(top = 8.dp)
+                        ) {
+                            Text("Retry")
+                        }
+                    }
+                }
+            }
+            is StoresUiState.Success -> {
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    items(state.stores) { store ->
+                        val isSelected = store.name in selectedSupermarkets
+                        val canSelect = selectionCount < 5 || isSelected
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(
+                                checked = isSelected,
+                                onCheckedChange = { checked ->
+                                    val newSelection = if (checked && canSelect) {
+                                        selectedSupermarkets + store.name
+                                    } else {
+                                        selectedSupermarkets - store.name
+                                    }
+                                    onSelectionChanged(newSelection)
+                                },
+                                enabled = canSelect
+                            )
+                            Column(modifier = Modifier.padding(start = 8.dp)) {
+                                Text(
+                                    text = store.name,
+                                    color = if (canSelect)
+                                        MaterialTheme.colorScheme.onSurface
+                                    else
+                                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                                )
+                                Text(
+                                    text = "${store.address}, ${store.city}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
-                            onSelectionChanged(newSelection)
-                        },
-                        enabled = canSelect
-                    )
-                    Text(
-                        text = supermarket,
-                        modifier = Modifier.padding(start = 8.dp),
-                        color = if (canSelect)
-                            MaterialTheme.colorScheme.onSurface
-                        else
-                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-                    )
+                        }
+                    }
                 }
             }
         }
     }
 }
 
-@Composable
-fun SearchTab() {
-    val weeklyItems = listOf(
-        "Milk",
-        "Bread",
-        "Eggs",
-        "Butter",
-        "Cheese",
-        "Chicken breast",
-        "Ground beef",
-        "Rice",
-        "Pasta",
-        "Tomatoes",
-        "Onions",
-        "Garlic",
-        "Potatoes",
-        "Carrots",
-        "Broccoli",
-        "Apples",
-        "Bananas",
-        "Orange juice",
-        "Yogurt",
-        "Cereal",
-        "Coffee",
-        "Tea",
-        "Olive oil",
-        "Salt",
-        "Pepper"
-    )
+sealed class ProductsUiState {
+    data object Loading : ProductsUiState()
+    data class Success(val products: List<Product>) : ProductsUiState()
+    data class Error(val message: String) : ProductsUiState()
+}
 
+sealed class StoresUiState {
+    data object Loading : StoresUiState()
+    data class Success(val stores: List<Store>) : StoresUiState()
+    data class Error(val message: String) : StoresUiState()
+}
+
+@Composable
+fun SearchTab(repository: ProductRepository = remember { ProductRepository() }) {
+    var uiState by remember { mutableStateOf<ProductsUiState>(ProductsUiState.Loading) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
-    val filteredItems = remember(searchQuery) {
-        if (searchQuery.isBlank()) {
-            weeklyItems
-        } else {
-            weeklyItems.filter { it.contains(searchQuery, ignoreCase = true) }
-        }
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) {
+        repository.getAllProducts()
+            .onSuccess { products -> uiState = ProductsUiState.Success(products) }
+            .onFailure { error -> uiState = ProductsUiState.Error(error.message ?: "Unknown error") }
     }
 
     Column(
@@ -252,39 +293,104 @@ fun SearchTab() {
             singleLine = true
         )
 
-        Text(
-            text = "${filteredItems.size} items",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(bottom = 8.dp)
-        )
-
-        LazyColumn(
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            items(filteredItems) { item ->
+        when (val state = uiState) {
+            is ProductsUiState.Loading -> {
+                Box(
+                    modifier = Modifier.fillMaxWidth().padding(32.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator()
+                }
+            }
+            is ProductsUiState.Error -> {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surface
+                        containerColor = MaterialTheme.colorScheme.errorContainer
                     )
                 ) {
-                    Text(
-                        text = item,
-                        modifier = Modifier.padding(16.dp),
-                        style = MaterialTheme.typography.bodyLarge
-                    )
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = "Failed to load products",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Text(
+                            text = state.message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Button(
+                            onClick = {
+                                uiState = ProductsUiState.Loading
+                                scope.launch {
+                                    repository.getAllProducts()
+                                        .onSuccess { products -> uiState = ProductsUiState.Success(products) }
+                                        .onFailure { error -> uiState = ProductsUiState.Error(error.message ?: "Unknown error") }
+                                }
+                            },
+                            modifier = Modifier.padding(top = 8.dp)
+                        ) {
+                            Text("Retry")
+                        }
+                    }
                 }
             }
+            is ProductsUiState.Success -> {
+                val filteredProducts = remember(searchQuery, state.products) {
+                    if (searchQuery.isBlank()) {
+                        state.products
+                    } else {
+                        state.products.filter {
+                            it.productName.contains(searchQuery, ignoreCase = true) ||
+                            it.brands.contains(searchQuery, ignoreCase = true)
+                        }
+                    }
+                }
 
-            if (filteredItems.isEmpty()) {
-                item {
-                    Text(
-                        text = "No items found",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(16.dp)
-                    )
+                Text(
+                    text = "${filteredProducts.size} items",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    items(filteredProducts) { product ->
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surface
+                            )
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Text(
+                                    text = product.productName,
+                                    style = MaterialTheme.typography.bodyLarge
+                                )
+                                if (product.brands.isNotBlank()) {
+                                    Text(
+                                        text = product.brands,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    if (filteredProducts.isEmpty()) {
+                        item {
+                            Text(
+                                text = "No items found",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(16.dp)
+                            )
+                        }
+                    }
                 }
             }
         }

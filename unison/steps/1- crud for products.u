@@ -1,4 +1,5 @@
 use lib.unison_cloud_27_2_0
+use lib.unison_cloud_27_2_0.lib.unison_http_14_0_0
 use lib.unison_routes_7_0_2
 use lib.unison_json_1_3_5
 
@@ -143,12 +144,45 @@ products.routes =
 products.main : Database -> HttpRequest ->{Exception, Storage, Remote, Log} HttpResponse
 products.main db req = ProductStorage.run db do Route.run products.routes req
 
+-- Add CORS headers to a response
+addCorsHeaders : HttpResponse -> HttpResponse
+addCorsHeaders response =
+  response
+    |> HttpResponse.addHeader "Access-Control-Allow-Origin" "*"
+    |> HttpResponse.addHeader "Access-Control-Allow-Methods" "GET, POST, PUT, DELETE, OPTIONS"
+    |> HttpResponse.addHeader "Access-Control-Allow-Headers" "Content-Type, Authorization"
+
+-- Check if request is OPTIONS method
+isOptionsMethod : HttpRequest -> Boolean
+isOptionsMethod req =
+  match HttpRequest.method req with
+    OPTIONS -> true
+    _ -> false
+
+-- CORS-enabled main entry point
+products.mainWithCors : Database -> HttpRequest ->{Exception, Storage, Remote, Log} HttpResponse
+products.mainWithCors db req =
+  if isOptionsMethod req then
+    addCorsHeaders (HttpResponse.ok Body.empty)
+  else addCorsHeaders (products.main db req)
+
 -- Local deployment for Products API
 products.deployLocal : '{IO, Exception} URI
 products.deployLocal = main.local.serve do
   env = Environment.default()
   db = Database.named "products-db"
   Database.assign db env
-  hash = deployHttp env (products.main db)
+  hash = deployHttp env (products.mainWithCors db)
   name = ServiceName.named "products-api"
   ServiceName.assign name hash
+
+-- Cloud deployment for Products API
+products.deployCloud : '{IO, Exception} ServiceHash HttpRequest HttpResponse
+products.deployCloud = Cloud.main do
+  env = Environment.default()
+  db = Database.named "products-db"
+  Database.assign db env
+  hash = deployHttp env (products.mainWithCors db)
+  name = ServiceName.named "products-api"
+  _ = ServiceName.assign name hash
+  hash

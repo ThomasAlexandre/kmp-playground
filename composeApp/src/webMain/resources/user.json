@@ -13,149 +13,19 @@
   "selectedStores": [
     {
       "storeId": 4933,
-      "storeName": "ICA Maxi Bromma",
       "addedAt": "2024-03-15T11:00:00Z",
       "isPreferred": true
     },
     {
       "storeId": 675,
-      "storeName": "ICA Supermarket Brommaplan",
       "addedAt": "2024-03-16T09:15:00Z",
       "isPreferred": false
     },
     {
       "storeId": 1709,
-      "storeName": "Coop Engströms Livs Nockeby",
       "addedAt": "2024-03-18T14:20:00Z",
       "isPreferred": false
     }
   ],
-  "shoppingLists": [
-    {
-      "id": "list_weekly_001",
-      "name": "Weekly Groceries",
-      "createdAt": "2024-06-01T08:00:00Z",
-      "updatedAt": "2024-06-10T16:45:00Z",
-      "isArchived": false,
-      "items": [
-        {
-          "id": "item_001",
-          "name": "Milk",
-          "quantity": 2,
-          "unit": "liters",
-          "category": "dairy",
-          "isChecked": false,
-          "notes": "Oat milk preferred"
-        },
-        {
-          "id": "item_002",
-          "name": "Bread",
-          "quantity": 1,
-          "unit": "loaf",
-          "category": "bakery",
-          "isChecked": true,
-          "notes": null
-        },
-        {
-          "id": "item_003",
-          "name": "Eggs",
-          "quantity": 12,
-          "unit": "pieces",
-          "category": "dairy",
-          "isChecked": false,
-          "notes": "Free-range"
-        },
-        {
-          "id": "item_004",
-          "name": "Bananas",
-          "quantity": 6,
-          "unit": "pieces",
-          "category": "produce",
-          "isChecked": false,
-          "notes": null
-        },
-        {
-          "id": "item_005",
-          "name": "Chicken breast",
-          "quantity": 500,
-          "unit": "grams",
-          "category": "meat",
-          "isChecked": false,
-          "notes": null
-        }
-      ]
-    },
-    {
-      "id": "list_party_002",
-      "name": "Birthday Party",
-      "createdAt": "2024-06-05T12:00:00Z",
-      "updatedAt": "2024-06-08T10:30:00Z",
-      "isArchived": false,
-      "items": [
-        {
-          "id": "item_101",
-          "name": "Birthday cake",
-          "quantity": 1,
-          "unit": "piece",
-          "category": "bakery",
-          "isChecked": true,
-          "notes": "Chocolate, order from bakery"
-        },
-        {
-          "id": "item_102",
-          "name": "Balloons",
-          "quantity": 20,
-          "unit": "pieces",
-          "category": "party supplies",
-          "isChecked": false,
-          "notes": "Assorted colors"
-        },
-        {
-          "id": "item_103",
-          "name": "Juice boxes",
-          "quantity": 12,
-          "unit": "pieces",
-          "category": "beverages",
-          "isChecked": false,
-          "notes": "Apple and orange"
-        },
-        {
-          "id": "item_104",
-          "name": "Paper plates",
-          "quantity": 1,
-          "unit": "pack",
-          "category": "party supplies",
-          "isChecked": false,
-          "notes": null
-        }
-      ]
-    },
-    {
-      "id": "list_archived_003",
-      "name": "Last Month Groceries",
-      "createdAt": "2024-05-01T08:00:00Z",
-      "updatedAt": "2024-05-28T18:00:00Z",
-      "isArchived": true,
-      "items": [
-        {
-          "id": "item_201",
-          "name": "Pasta",
-          "quantity": 2,
-          "unit": "packs",
-          "category": "pantry",
-          "isChecked": true,
-          "notes": null
-        },
-        {
-          "id": "item_202",
-          "name": "Tomato sauce",
-          "quantity": 3,
-          "unit": "jars",
-          "category": "pantry",
-          "isChecked": true,
-          "notes": null
-        }
-      ]
-    }
-  ]
+  "shoppingListIds": ["list_weekly_001", "list_party_002", "list_archived_003"]
 }

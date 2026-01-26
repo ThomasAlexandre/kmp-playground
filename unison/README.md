@@ -157,13 +157,93 @@ curl -X POST https://thomasalexandre.unison-services.cloud/s/shopping-lists-api/
 ./unison/scripts/seed-shopping-lists.sh "https://thomasalexandre.unison-services.cloud/s/shopping-lists-api"
 ```
 
+### Users API
+
+**Base URL:** `https://thomasalexandre.unison-services.cloud/s/users-api`
+
+#### Data Model
+
+**UserProfile**:
+```json
+{
+  "preferredLanguage": "sv",
+  "currency": "SEK",
+  "notificationsEnabled": true,
+  "darkModeEnabled": false
+}
+```
+
+**SelectedStore** (simplified - storeName resolved via stores API):
+```json
+{
+  "storeId": 4933,
+  "addedAt": "2024-03-15T11:00:00Z",
+  "isPreferred": true
+}
+```
+
+**User** (references shopping lists by ID):
+```json
+{
+  "id": "usr_a1b2c3d4",
+  "name": "Anna Lindqvist",
+  "email": "anna.lindqvist@example.com",
+  "avatarUrl": "https://api.dicebear.com/7.x/avataaars/svg?seed=anna",
+  "createdAt": "2024-03-15T10:30:00Z",
+  "profile": {...},
+  "selectedStores": [...],
+  "shoppingListIds": ["list_weekly_001", "list_party_002"]
+}
+```
+
+#### Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/health` | Health check |
+| GET | `/users` | Get all users |
+| GET | `/users/:id` | Get user by ID |
+| POST | `/users` | Create a new user |
+| PUT | `/users/:id` | Update a user |
+| DELETE | `/users/:id` | Delete a user |
+
+#### Example Requests
+
+```bash
+# Get all users
+curl https://thomasalexandre.unison-services.cloud/s/users-api/users
+
+# Get a specific user
+curl https://thomasalexandre.unison-services.cloud/s/users-api/users/usr_a1b2c3d4
+
+# Create a new user
+curl -X POST https://thomasalexandre.unison-services.cloud/s/users-api/users \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "usr_a1b2c3d4",
+    "name": "Anna Lindqvist",
+    "email": "anna.lindqvist@example.com",
+    "avatarUrl": "https://api.dicebear.com/7.x/avataaars/svg?seed=anna",
+    "createdAt": "2024-03-15T10:30:00Z",
+    "profile": {
+      "preferredLanguage": "sv",
+      "currency": "SEK",
+      "notificationsEnabled": true,
+      "darkModeEnabled": false
+    },
+    "selectedStores": [
+      {"storeId": 4933, "addedAt": "2024-03-15T11:00:00Z", "isPreferred": true}
+    ],
+    "shoppingListIds": ["list_weekly_001", "list_party_002"]
+  }'
+```
+
 ### Other APIs
 
 | API | Base URL | Description |
 |-----|----------|-------------|
 | Products | `/s/products-api` | CRUD for products (from Open Food Facts) |
 | Stores | `/s/stores-api` | CRUD for store locations |
-| Users | `/s/users-api` | CRUD for user profiles |
 
 ## Quick Example
 

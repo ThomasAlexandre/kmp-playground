@@ -1,4 +1,7 @@
 update
+switch main
+branches
+update
 projects
 update
 auth.login

@@ -1,0 +1,40 @@
+{
+  "shoppingLists": [
+    {
+      "id": "list_weekly_001",
+      "name": "Weekly Groceries",
+      "createdAt": "2024-06-01T08:00:00Z",
+      "updatedAt": "2024-06-10T16:45:00Z",
+      "isArchived": false,
+      "items": [
+        {
+          "code": "7310865005168",
+          "quantity": 1,
+          "isChecked": false,
+          "notes": null
+        },
+        {
+          "code": "7318690182900",
+          "quantity": 2,
+          "isChecked": true,
+          "notes": "For Saturday dinner"
+        }
+      ]
+    },
+    {
+      "id": "list_party_002",
+      "name": "Birthday Party",
+      "createdAt": "2024-06-05T12:00:00Z",
+      "updatedAt": "2024-06-08T10:30:00Z",
+      "isArchived": false,
+      "items": [
+        {
+          "code": "7310865005168",
+          "quantity": 2,
+          "isChecked": false,
+          "notes": "For baking"
+        }
+      ]
+    }
+  ]
+}

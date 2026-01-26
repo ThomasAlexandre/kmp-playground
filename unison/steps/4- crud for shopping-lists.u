@@ -1,0 +1,233 @@
+-- ShoppingList CRUD API
+-- Uses Unison's dynamic call graph optimization to directly access ProductStorage
+-- without HTTP overhead
+
+use lib.unison_cloud_27_2_0
+use lib.unison_cloud_27_2_0.lib.unison_http_14_0_0
+use lib.unison_routes_7_0_2
+use lib.unison_json_1_3_5
+
+type ShoppingListId
+  = ShoppingListId Text
+
+ShoppingListId.toText : ShoppingListId -> Text
+ShoppingListId.toText = cases ShoppingListId.ShoppingListId t -> t
+
+type ShoppingItem
+  = { code : Text, quantity : Nat, isChecked : Boolean, notes : Optional Text }
+
+type ShoppingList
+  = { listId : Text,
+      listName : Text,
+      createdAt : Text,
+      updatedAt : Text,
+      isArchived : Boolean,
+      items : [ShoppingItem] }
+
+ShoppingItem.toJson : ShoppingItem -> Json
+ShoppingItem.toJson item =
+  base =
+    object.empty
+      |> addText "code" (ShoppingItem.code item)
+      |> addNat "quantity" (ShoppingItem.quantity item)
+      |> addBoolean "isChecked" (ShoppingItem.isChecked item)
+  match ShoppingItem.notes item with
+    Some n -> base |> addText "notes" n
+    None   -> base |> object.add "notes" Json.null
+
+ShoppingList.toJson : ShoppingList -> Json
+ShoppingList.toJson sl =
+  object.empty
+    |> addText "id" (ShoppingList.listId sl)
+    |> addText "name" (ShoppingList.listName sl)
+    |> addText "createdAt" (ShoppingList.createdAt sl)
+    |> addText "updatedAt" (ShoppingList.updatedAt sl)
+    |> addBoolean "isArchived" (ShoppingList.isArchived sl)
+    |> object.add
+         "items"
+         (Json.array (List.map ShoppingItem.toJson (ShoppingList.items sl)))
+
+ShoppingItem.decoder : '{Decoder} ShoppingItem
+ShoppingItem.decoder = do
+  use Decoder text
+  use object at!
+  code = at! "code" text
+  quantity = at! "quantity" Decoder.nat
+  isChecked = at! "isChecked" Decoder.boolean
+  notes = optionalAt! "notes" text
+  ShoppingItem.ShoppingItem code quantity isChecked notes
+
+ShoppingList.decoder : '{Decoder} ShoppingList
+ShoppingList.decoder = do
+  use Decoder text
+  use object at!
+  id = at! "id" text
+  name = at! "name" text
+  createdAt = at! "createdAt" text
+  updatedAt = at! "updatedAt" text
+  isArchived = at! "isArchived" Decoder.boolean
+  items = at! "items" (Decoder.array ShoppingItem.decoder)
+  ShoppingList.ShoppingList id name createdAt updatedAt isArchived items
+
+ability ShoppingListStorage where
+  getShoppingList :
+    ShoppingListId ->{ShoppingListStorage} Optional ShoppingList
+  deleteShoppingList : ShoppingListId ->{ShoppingListStorage} ()
+  getAllShoppingLists : '{ShoppingListStorage} [ShoppingList]
+  upsertShoppingList : ShoppingList ->{ShoppingListStorage} ()
+
+ShoppingListStorage.run :
+  Database -> '{g, ShoppingListStorage} a ->{g, Remote} a
+ShoppingListStorage.run db computation =
+  use ShoppingListId ShoppingListId
+  table : OrderedTable Text ShoppingList
+  table = OrderedTable.named db "shopping-lists" Universal.ordering
+  go : Request {ShoppingListStorage} a ->{g, Remote} a
+  go = cases
+    { a } -> a
+    { ShoppingListStorage.getShoppingList (ShoppingListId listId) -> resume } ->
+      result = OrderedTable.tryRead table listId
+      handle resume result with go
+    { ShoppingListStorage.upsertShoppingList list -> resume } ->
+      OrderedTable.write table (ShoppingList.listId list) list
+      handle resume() with go
+    { ShoppingListStorage.deleteShoppingList (ShoppingListId listId) -> resume } ->
+      OrderedTable.delete table listId
+      handle resume() with go
+    { ShoppingListStorage.getAllShoppingLists () -> resume } ->
+      lists = Stream.toList (OrderedTable.toStream table) |> List.map at2
+      handle resume lists with go
+  handle computation() with go
+
+shoppingLists.routes : '{Route, ShoppingListStorage, Exception, Log} ()
+shoppingLists.routes =
+  use Parser /
+  use Route <|>
+  use ShoppingList ShoppingList
+  use ShoppingListId ShoppingListId
+  use ShoppingListStorage getShoppingList upsertShoppingList
+  use Text ++
+  health = do
+    noCapture GET (s "health")
+    ok.text "ok"
+  getAllLists = do
+    noCapture GET (s "lists")
+    info "Getting all shopping lists" []
+    lists = ShoppingListStorage.getAllShoppingLists()
+    json = Json.array (List.map ShoppingList.toJson lists)
+    ok.json json
+  getListById = do
+    listId = route GET (s "lists" / Parser.text)
+    info "Getting shopping list" [("id", listId)]
+    match getShoppingList (ShoppingListId listId) with
+      Some list -> ok.json (ShoppingList.toJson list)
+      None      -> notFound.text ("Shopping list not found: " ++ listId)
+  createList = do
+    noCapture POST (s "lists")
+    list = decodeJson ShoppingList.decoder
+    info "Creating shopping list" [("id", ShoppingList.listId list)]
+    upsertShoppingList list
+    setStatus (Status 201 "Created")
+    ok.json (ShoppingList.toJson list)
+  updateList =
+    do
+      listId = route PUT (s "lists" / Parser.text)
+      list = decodeJson ShoppingList.decoder
+      info "Updating shopping list" [("id", listId)]
+      match getShoppingList (ShoppingListId listId) with
+        Some _ ->
+          updatedList =
+            ShoppingList
+              listId
+              (ShoppingList.listName list)
+              (ShoppingList.createdAt list)
+              (ShoppingList.updatedAt list)
+              (ShoppingList.isArchived list)
+              (ShoppingList.items list)
+          upsertShoppingList updatedList
+          ok.json (ShoppingList.toJson updatedList)
+        None -> notFound.text ("Shopping list not found: " ++ listId)
+  deleteList = do
+    listId = route DELETE (s "lists" / Parser.text)
+    info "Deleting shopping list" [("id", listId)]
+    match getShoppingList (ShoppingListId listId) with
+      Some _ ->
+        ShoppingListStorage.deleteShoppingList (ShoppingListId listId)
+        ok.text "Deleted"
+      None   -> notFound.text ("Shopping list not found: " ++ listId)
+  addItemToList =
+    do
+      use List :+
+      listId = route POST (s "lists" / Parser.text / s "items")
+      item = decodeJson ShoppingItem.decoder
+      info
+        "Adding item to shopping list"
+        [("listId", listId), ("code", ShoppingItem.code item)]
+      match getShoppingList (ShoppingListId listId) with
+        Some list ->
+          updatedItems = ShoppingList.items list :+ item
+          updatedList =
+            ShoppingList
+              (ShoppingList.listId list)
+              (ShoppingList.listName list)
+              (ShoppingList.createdAt list)
+              (ShoppingList.updatedAt list)
+              (ShoppingList.isArchived list)
+              updatedItems
+          upsertShoppingList updatedList
+          ok.json (ShoppingList.toJson updatedList)
+        None -> notFound.text ("Shopping list not found: " ++ listId)
+  health
+    <|> getListById
+    <|> getAllLists
+    <|> createList
+    <|> updateList
+    <|> deleteList
+    <|> addItemToList
+
+shoppingLists.main :
+  Database -> HttpRequest ->{Exception, Storage, Remote, Log} HttpResponse
+shoppingLists.main db req =
+  ShoppingListStorage.run db do Route.run shoppingLists.routes req
+
+shoppingLists.addCorsHeaders : HttpResponse -> HttpResponse
+shoppingLists.addCorsHeaders response =
+  use HttpResponse addHeader
+  response
+    |> addHeader "Access-Control-Allow-Origin" "*"
+    |> addHeader
+         "Access-Control-Allow-Methods" "GET, POST, PUT, DELETE, OPTIONS"
+    |> addHeader "Access-Control-Allow-Headers" "Content-Type, Authorization"
+
+shoppingLists.isOptionsMethod : HttpRequest -> Boolean
+shoppingLists.isOptionsMethod req = match HttpRequest.method req with
+  OPTIONS -> true
+  _       -> false
+
+shoppingLists.mainWithCors :
+  Database -> HttpRequest ->{Exception, Storage, Remote, Log} HttpResponse
+shoppingLists.mainWithCors db req =
+  if shoppingLists.isOptionsMethod req then
+    shoppingLists.addCorsHeaders
+      (unison_http_14_0_0.HttpResponse.ok Body.empty)
+  else shoppingLists.addCorsHeaders (shoppingLists.main db req)
+
+shoppingLists.deployLocal : '{IO, Exception} URI
+shoppingLists.deployLocal = main.local.serve do
+  env = Environment.default()
+  db = Database.named "shopping-lists-db"
+  Database.assign db env
+  hash = deployHttp env (shoppingLists.mainWithCors db)
+  name = ServiceName.named "shopping-lists-api"
+  ServiceName.assign name hash
+
+shoppingLists.deployCloud :
+  '{IO, Exception} ServiceHash HttpRequest HttpResponse
+shoppingLists.deployCloud = Cloud.main do
+  env = Environment.default()
+  db = Database.named "shopping-lists-db"
+  Database.assign db env
+  hash = deployHttp env (shoppingLists.mainWithCors db)
+  name = ServiceName.named "shopping-lists-api"
+  _ = ServiceName.assign name hash
+  hash

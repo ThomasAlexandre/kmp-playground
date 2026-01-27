@@ -31,6 +31,8 @@ import se.ac.kmp_playground.data.Product
 import se.ac.kmp_playground.data.ProductRepository
 import se.ac.kmp_playground.data.Store
 import se.ac.kmp_playground.data.StoreRepository
+import se.ac.kmp_playground.data.User
+import se.ac.kmp_playground.data.UserRepository
 
 val shoppingListItems = listOf(
     "Milk", "Bread", "Eggs", "Butter", "Cheese",
@@ -113,18 +115,43 @@ fun App() {
 fun ProfileTab(
     selectedSupermarkets: Set<String>,
     onSelectionChanged: (Set<String>) -> Unit,
-    repository: StoreRepository = remember { StoreRepository() }
+    storeRepository: StoreRepository = remember { StoreRepository() },
+    userRepository: UserRepository = remember { UserRepository() },
+    currentUserId: String = "usr_a1b2c3d4"
 ) {
     var showContent by remember { mutableStateOf(false) }
     var storesUiState by remember { mutableStateOf<StoresUiState>(StoresUiState.Loading) }
+    var user by remember { mutableStateOf<User?>(null) }
+    var hasInitializedSelection by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val selectionCount = selectedSupermarkets.size
     val isValidSelection = selectionCount in 1..5
 
     LaunchedEffect(Unit) {
-        repository.getAllStores()
+        // Load stores and user in parallel
+        storeRepository.getAllStores()
             .onSuccess { stores -> storesUiState = StoresUiState.Success(stores) }
             .onFailure { error -> storesUiState = StoresUiState.Error(error.message ?: "Unknown error") }
+
+        userRepository.getUserById(currentUserId)
+            .onSuccess { loadedUser -> user = loadedUser }
+            .onFailure { /* User not found is OK, just won't pre-select */ }
+    }
+
+    // Pre-select stores based on user's selectedStores when both are loaded
+    LaunchedEffect(storesUiState, user) {
+        if (!hasInitializedSelection && user != null && storesUiState is StoresUiState.Success) {
+            val stores = (storesUiState as StoresUiState.Success).stores
+            val userStoreIds = user!!.selectedStores.map { it.storeId }.toSet()
+            val preSelectedNames = stores
+                .filter { it.id in userStoreIds }
+                .map { it.name }
+                .toSet()
+            if (preSelectedNames.isNotEmpty()) {
+                onSelectionChanged(preSelectedNames)
+            }
+            hasInitializedSelection = true
+        }
     }
 
     Column(
@@ -191,7 +218,7 @@ fun ProfileTab(
                             onClick = {
                                 storesUiState = StoresUiState.Loading
                                 scope.launch {
-                                    repository.getAllStores()
+                                    storeRepository.getAllStores()
                                         .onSuccess { stores -> storesUiState = StoresUiState.Success(stores) }
                                         .onFailure { error -> storesUiState = StoresUiState.Error(error.message ?: "Unknown error") }
                                 }

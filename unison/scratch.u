@@ -1,106 +1,9 @@
-type SelectedStore
-  = { storeId : Nat, addedAt : Text, isPreferred : Boolean }
-
-SelectedStore.toJson : SelectedStore -> Json
-SelectedStore.toJson ss =
-  object.empty
-    |> addNat "storeId" (SelectedStore.storeId ss)
-    |> addText "addedAt" (SelectedStore.addedAt ss)
-    |> addBoolean "isPreferred" (SelectedStore.isPreferred ss)
-
-SelectedStore.decoder : '{Decoder} SelectedStore
-SelectedStore.decoder = do
-  use object at!
-  storeId = at! "storeId" Decoder.nat
-  addedAt = at! "addedAt" Decoder.text
-  isPreferred = at! "isPreferred" Decoder.boolean
-  SelectedStore.SelectedStore storeId addedAt isPreferred
-
-type User
-  = { id : Text,
-      name : Text,
-      email : Text,
-      avatarUrl : Text,
-      createdAt : Text,
-      profile : UserProfile,
-      selectedStores : [SelectedStore],
-      shoppingListIds : [Text] }
-
-User.toJson : User -> Json
-User.toJson user =
-  use Json array
-  use List map
-  use object add
-  object.empty
-    |> addText "id" (User.id user)
-    |> addText "name" (User.name user)
-    |> addText "email" (User.email user)
-    |> addText "avatarUrl" (User.avatarUrl user)
-    |> addText "createdAt" (User.createdAt user)
-    |> add "profile" (UserProfile.toJson (User.profile user))
-    |> add
-         "selectedStores"
-         (array (map SelectedStore.toJson (User.selectedStores user)))
-    |> add
-         "shoppingListIds" (array (map Json.text (User.shoppingListIds user)))
-
-User.decoder : '{Decoder} User
-User.decoder =
-  do
-    use Decoder array text
-    use object at!
-    id = at! "id" text
-    name = at! "name" text
-    email = at! "email" text
-    avatarUrl = at! "avatarUrl" text
-    createdAt = at! "createdAt" text
-    profile = at! "profile" UserProfile.decoder
-    selectedStores = at! "selectedStores" (array SelectedStore.decoder)
-    shoppingListIds = at! "shoppingListIds" (array text)
-    User.User
-      id name email avatarUrl createdAt profile selectedStores shoppingListIds
-
-type UserId
-  = UserId Text
-
-UserId.toText : UserId -> Text
-UserId.toText = cases UserId.UserId t -> t
-
-ability UserStorage where
-  upsertUser : User ->{UserStorage} ()
-  deleteUser : UserId ->{UserStorage} ()
-  getUser : UserId ->{UserStorage} Optional User
-  getAllUsers : '{UserStorage} [User]
-
-UserStorage.run : Database -> '{g, UserStorage} a ->{g, Remote} a
-UserStorage.run db computation =
-  use UserId UserId
-  table : OrderedTable Text User
-  table = OrderedTable.named db "users" Universal.ordering
-  go : Request {UserStorage} a ->{g, Remote} a
-  go = cases
-    { a }                                                  -> a
-    { UserStorage.getUser (UserId odUserId) -> resume }    ->
-      result = OrderedTable.tryRead table odUserId
-      handle resume result with go
-    { UserStorage.upsertUser user -> resume }              ->
-      OrderedTable.write table (User.id user) user
-      handle resume() with go
-    { UserStorage.deleteUser (UserId odUserId) -> resume } ->
-      OrderedTable.delete table odUserId
-      handle resume() with go
-    { UserStorage.getAllUsers () -> resume }               ->
-      users = Stream.toList (OrderedTable.toStream table) |> List.map at2
-      handle resume users with go
-  handle computation() with go
-
 users.routes : '{Route, Exception, UserStorage, Log} ()
 users.routes =
   use Parser /
   use Route <|>
   use Text ++
-  use UserId UserId
-  use UserStorage getUser upsertUser
+  use User decoder toJson
   health = do
     noCapture GET (s "health")
     ok.text "ok"
@@ -108,41 +11,31 @@ users.routes =
     noCapture GET (s "users")
     info "Getting all users" []
     userList = UserStorage.getAllUsers()
-    json = Json.array (List.map User.toJson userList)
+    json = Json.array (List.map toJson userList)
     ok.json json
   getUserById = do
     odUserId = route GET (s "users" / Parser.text)
     info "Getting user" [("id", odUserId)]
     match getUser (UserId odUserId) with
-      Some user -> ok.json (User.toJson user)
+      Some user -> ok.json (toJson user)
       None      -> notFound.text ("User not found: " ++ odUserId)
   createUser = do
     noCapture POST (s "users")
-    user = decodeJson User.decoder
+    user = decodeJson decoder
     info "Creating user" [("id", User.id user)]
     upsertUser user
     setStatus (Status 201 "Created")
-    ok.json (User.toJson user)
-  updateUser =
-    do
-      odUserId = route PUT (s "users" / Parser.text)
-      user = decodeJson User.decoder
-      info "Updating user" [("id", odUserId)]
-      match getUser (UserId odUserId) with
-        Some _ ->
-          updatedUser =
-            User.User
-              odUserId
-              (User.name user)
-              (User.email user)
-              (User.avatarUrl user)
-              (User.createdAt user)
-              (User.profile user)
-              (User.selectedStores user)
-              (User.shoppingListIds user)
-          upsertUser updatedUser
-          ok.json (User.toJson updatedUser)
-        None -> notFound.text ("User not found: " ++ odUserId)
+    ok.json (toJson user)
+  updateUser = do
+    odUserId = route PUT (s "users" / Parser.text)
+    user = decodeJson decoder
+    info "Updating user" [("id", odUserId)]
+    match getUser (UserId odUserId) with
+      Some _ ->
+        updatedUser = User odUserId (User.name user) (User.email user) (User.avatarUrl user) (User.createdAt user) (profile user) (selectedStores user) (shoppingListIds user)
+        upsertUser updatedUser
+        ok.json (toJson updatedUser)
+      None   -> notFound.text ("User not found: " ++ odUserId)
   deleteUser = do
     odUserId = route DELETE (s "users" / Parser.text)
     info "Deleting user" [("id", odUserId)]
@@ -151,39 +44,4 @@ users.routes =
         UserStorage.deleteUser (UserId odUserId)
         ok.text "Deleted"
       None   -> notFound.text ("User not found: " ++ odUserId)
-  health
-    <|> getAllUsers
-    <|> getUserById
-    <|> createUser
-    <|> updateUser
-    <|> deleteUser
-
-users.main :
-  Database -> HttpRequest ->{Exception, Storage, Remote, Log} HttpResponse
-users.main db req = UserStorage.run db do Route.run users.routes req
-
-users.mainWithCors :
-  Database -> HttpRequest ->{Exception, Storage, Remote, Log} HttpResponse
-users.mainWithCors db req =
-  if isOptionsMethod req then
-    addCorsHeaders (unison_http_14_0_0.HttpResponse.ok Body.empty)
-  else addCorsHeaders (users.main db req)
-
-users.deployLocal : '{IO, Exception} URI
-users.deployLocal = main.local.serve do
-  env = Environment.default()
-  db = Database.named "users-db"
-  Database.assign db env
-  hash = deployHttp env (users.mainWithCors db)
-  name = ServiceName.named "users-api"
-  ServiceName.assign name hash
-
-users.deployCloud : '{IO, Exception} ServiceHash HttpRequest HttpResponse
-users.deployCloud = Cloud.main do
-  env = Environment.default()
-  db = Database.named "users-db"
-  Database.assign db env
-  hash = deployHttp env (users.mainWithCors db)
-  name = ServiceName.named "users-api"
-  _ = ServiceName.assign name hash
-  hash
+  health <|> getUserById <|> getAllUsers <|> createUser <|> updateUser <|> deleteUser

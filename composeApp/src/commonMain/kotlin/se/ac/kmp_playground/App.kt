@@ -31,6 +31,7 @@ import se.ac.kmp_playground.data.Product
 import se.ac.kmp_playground.data.ProductRepository
 import se.ac.kmp_playground.data.Store
 import se.ac.kmp_playground.data.StoreRepository
+import se.ac.kmp_playground.data.SelectedStore
 import se.ac.kmp_playground.data.User
 import se.ac.kmp_playground.data.UserRepository
 
@@ -251,6 +252,26 @@ fun ProfileTab(
                                         selectedSupermarkets - store.name
                                     }
                                     onSelectionChanged(newSelection)
+
+                                    // Update user profile in backend
+                                    user?.let { currentUser ->
+                                        scope.launch {
+                                            val updatedSelectedStores = if (checked && canSelect) {
+                                                // Add store with current timestamp
+                                                currentUser.selectedStores + SelectedStore(
+                                                    storeId = store.id,
+                                                    addedAt = getPlatformTimestamp(),
+                                                    isPreferred = false
+                                                )
+                                            } else {
+                                                // Remove store
+                                                currentUser.selectedStores.filter { it.storeId != store.id }
+                                            }
+                                            val updatedUser = currentUser.copy(selectedStores = updatedSelectedStores)
+                                            userRepository.updateUser(updatedUser)
+                                                .onSuccess { user = it }
+                                        }
+                                    }
                                 },
                                 enabled = canSelect
                             )

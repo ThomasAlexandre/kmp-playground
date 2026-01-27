@@ -1,7 +1,6 @@
 package se.ac.kmp_playground
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,9 +20,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import kmp_playground.composeapp.generated.resources.Res
-import kmp_playground.composeapp.generated.resources.compose_multiplatform
-import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.compose.ui.tooling.preview.Preview
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
@@ -164,14 +160,44 @@ fun ProfileTab(
             Text("Select on Map!")
         }
         AnimatedVisibility(showContent) {
-            val greeting = remember { Greeting().greet() }
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Image(painterResource(Res.drawable.compose_multiplatform), null)
-                Text("Compose: $greeting")
-            }
+            val stores = (storesUiState as? StoresUiState.Success)?.stores ?: emptyList()
+            val selectedStoreIds = user?.selectedStores?.map { it.storeId }?.toSet() ?: emptySet()
+            val markers = stores.map { store -> store.toMapMarker(store.id in selectedStoreIds) }
+
+            MapView(
+                modifier = Modifier.fillMaxWidth().size(300.dp),
+                markers = markers,
+                selectedMarkerIds = selectedStoreIds,
+                onMarkerClick = { storeId ->
+                    val store = stores.find { it.id == storeId } ?: return@MapView
+                    val isCurrentlySelected = store.name in selectedSupermarkets
+                    val canSelect = selectedSupermarkets.size < 5 || isCurrentlySelected
+
+                    val newSelection = if (!isCurrentlySelected && canSelect) {
+                        selectedSupermarkets + store.name
+                    } else {
+                        selectedSupermarkets - store.name
+                    }
+                    onSelectionChanged(newSelection)
+
+                    user?.let { currentUser ->
+                        scope.launch {
+                            val updatedSelectedStores = if (!isCurrentlySelected && canSelect) {
+                                currentUser.selectedStores + SelectedStore(
+                                    storeId = store.id,
+                                    addedAt = getPlatformTimestamp(),
+                                    isPreferred = false
+                                )
+                            } else {
+                                currentUser.selectedStores.filter { it.storeId != storeId }
+                            }
+                            val updatedUser = currentUser.copy(selectedStores = updatedSelectedStores)
+                            userRepository.updateUser(updatedUser)
+                                .onSuccess { user = it }
+                        }
+                    }
+                }
+            )
         }
         Text(
             text = "Select Your Supermarkets",

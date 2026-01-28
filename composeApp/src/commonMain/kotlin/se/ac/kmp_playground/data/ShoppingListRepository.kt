@@ -31,4 +31,13 @@ class ShoppingListRepository(
             Result.failure(e)
         }
     }
+
+    suspend fun getEnrichedShoppingList(listId: String): Result<EnrichedShoppingList> {
+        return try {
+            val list: EnrichedShoppingList = client.get("$baseUrl/lists/$listId/enriched").body()
+            Result.success(list)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
 }

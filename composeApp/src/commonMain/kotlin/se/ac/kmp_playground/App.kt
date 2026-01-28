@@ -34,8 +34,12 @@ import se.ac.kmp_playground.data.StoreRepository
 import se.ac.kmp_playground.data.SelectedStore
 import se.ac.kmp_playground.data.ShoppingList
 import se.ac.kmp_playground.data.ShoppingListRepository
+import se.ac.kmp_playground.data.EnrichedShoppingList
 import se.ac.kmp_playground.data.User
 import se.ac.kmp_playground.data.UserRepository
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 
 val shoppingListItems = listOf(
     "Milk", "Bread", "Eggs", "Butter", "Cheese",
@@ -126,6 +130,8 @@ fun ProfileTab(
     var showContent by remember { mutableStateOf(false) }
     var storesUiState by remember { mutableStateOf<StoresUiState>(StoresUiState.Loading) }
     var shoppingListsUiState by remember { mutableStateOf<ShoppingListsUiState>(ShoppingListsUiState.Loading) }
+    var enrichedListUiState by remember { mutableStateOf<EnrichedShoppingListUiState>(EnrichedShoppingListUiState.Idle) }
+    var selectedShoppingListId by remember { mutableStateOf<String?>(null) }
     var user by remember { mutableStateOf<User?>(null) }
     var hasInitializedSelection by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -315,53 +321,197 @@ fun ProfileTab(
 
         HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
 
-        Text(
-            text = "Your Shopping Lists",
-            style = MaterialTheme.typography.titleLarge
-        )
+        when (val enrichedState = enrichedListUiState) {
+            is EnrichedShoppingListUiState.Idle -> {
+                Text(
+                    text = "Your Shopping Lists",
+                    style = MaterialTheme.typography.titleLarge
+                )
 
-        when (val listsState = shoppingListsUiState) {
-            is ShoppingListsUiState.Loading -> {
-                Box(
-                    modifier = Modifier.fillMaxWidth().padding(16.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                when (val listsState = shoppingListsUiState) {
+                    is ShoppingListsUiState.Loading -> {
+                        Box(
+                            modifier = Modifier.fillMaxWidth().padding(16.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                        }
+                    }
+                    is ShoppingListsUiState.Error -> {
+                        Text(
+                            text = "Failed to load shopping lists",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(vertical = 8.dp)
+                        )
+                    }
+                    is ShoppingListsUiState.Success -> {
+                        if (listsState.shoppingLists.isEmpty()) {
+                            Text(
+                                text = "No shopping lists yet",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(vertical = 8.dp)
+                            )
+                        } else {
+                            Column(
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.padding(top = 8.dp)
+                            ) {
+                                listsState.shoppingLists.forEach { shoppingList ->
+                                    Card(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                selectedShoppingListId = shoppingList.id
+                                                enrichedListUiState = EnrichedShoppingListUiState.Loading
+                                                scope.launch {
+                                                    shoppingListRepository.getEnrichedShoppingList(shoppingList.id)
+                                                        .onSuccess { enrichedList ->
+                                                            enrichedListUiState = EnrichedShoppingListUiState.Success(enrichedList)
+                                                        }
+                                                        .onFailure { error ->
+                                                            enrichedListUiState = EnrichedShoppingListUiState.Error(error.message ?: "Unknown error")
+                                                        }
+                                                }
+                                            },
+                                        colors = CardDefaults.cardColors(
+                                            containerColor = MaterialTheme.colorScheme.surface
+                                        )
+                                    ) {
+                                        Text(
+                                            text = shoppingList.name,
+                                            style = MaterialTheme.typography.bodyLarge,
+                                            modifier = Modifier.padding(16.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
-            is ShoppingListsUiState.Error -> {
-                Text(
-                    text = "Failed to load shopping lists",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(vertical = 8.dp)
-                )
+            is EnrichedShoppingListUiState.Loading -> {
+                Box(
+                    modifier = Modifier.fillMaxWidth().padding(32.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator()
+                }
             }
-            is ShoppingListsUiState.Success -> {
-                if (listsState.shoppingLists.isEmpty()) {
+            is EnrichedShoppingListUiState.Error -> {
+                Column {
                     Text(
-                        text = "No shopping lists yet",
+                        text = "Failed to load shopping list details",
                         style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                    Button(
+                        onClick = {
+                            enrichedListUiState = EnrichedShoppingListUiState.Idle
+                            selectedShoppingListId = null
+                        },
+                        modifier = Modifier.padding(top = 8.dp)
+                    ) {
+                        Text("Back to Lists")
+                    }
+                }
+            }
+            is EnrichedShoppingListUiState.Success -> {
+                Column {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(
+                            onClick = {
+                                enrichedListUiState = EnrichedShoppingListUiState.Idle
+                                selectedShoppingListId = null
+                            }
+                        ) {
+                            Text("< Back")
+                        }
+                        Text(
+                            text = enrichedState.enrichedList.name,
+                            style = MaterialTheme.typography.titleLarge,
+                            modifier = Modifier.padding(start = 8.dp)
+                        )
+                    }
+
+                    Text(
+                        text = "${enrichedState.enrichedList.items.size} items",
+                        style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(vertical = 8.dp)
                     )
-                } else {
-                    Column(
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.padding(top = 8.dp)
+
+                    LazyColumn(
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        listsState.shoppingLists.forEach { shoppingList ->
+                        items(enrichedState.enrichedList.items) { item ->
                             Card(
                                 modifier = Modifier.fillMaxWidth(),
                                 colors = CardDefaults.cardColors(
                                     containerColor = MaterialTheme.colorScheme.surface
                                 )
                             ) {
-                                Text(
-                                    text = shoppingList.name,
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    modifier = Modifier.padding(16.dp)
-                                )
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(56.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(
+                                                if (!item.productImageUrl.isNullOrBlank())
+                                                    MaterialTheme.colorScheme.primaryContainer
+                                                else
+                                                    MaterialTheme.colorScheme.surfaceVariant
+                                            ),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = item.name.take(2).uppercase(),
+                                            style = MaterialTheme.typography.titleMedium,
+                                            color = if (!item.productImageUrl.isNullOrBlank())
+                                                MaterialTheme.colorScheme.onPrimaryContainer
+                                            else
+                                                MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Column(
+                                        modifier = Modifier
+                                            .padding(start = 12.dp)
+                                            .weight(1f)
+                                    ) {
+                                        Text(
+                                            text = item.name,
+                                            style = MaterialTheme.typography.bodyLarge
+                                        )
+                                        Text(
+                                            text = "Qty: ${item.quantity}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        if (!item.productBrands.isNullOrBlank()) {
+                                            Text(
+                                                text = item.productBrands,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                    if (item.isChecked) {
+                                        Text(
+                                            text = "✓",
+                                            style = MaterialTheme.typography.titleMedium,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -387,6 +537,13 @@ sealed class ShoppingListsUiState {
     data object Loading : ShoppingListsUiState()
     data class Success(val shoppingLists: List<ShoppingList>) : ShoppingListsUiState()
     data class Error(val message: String) : ShoppingListsUiState()
+}
+
+sealed class EnrichedShoppingListUiState {
+    data object Idle : EnrichedShoppingListUiState()
+    data object Loading : EnrichedShoppingListUiState()
+    data class Success(val enrichedList: EnrichedShoppingList) : EnrichedShoppingListUiState()
+    data class Error(val message: String) : EnrichedShoppingListUiState()
 }
 
 @Composable

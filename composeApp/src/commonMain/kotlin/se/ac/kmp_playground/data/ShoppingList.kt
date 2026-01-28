@@ -10,3 +10,27 @@ data class ShoppingList(
     val updatedAt: String,
     val isArchived: Boolean
 )
+
+@Serializable
+data class EnrichedShoppingItem(
+    val id: String,
+    val name: String,
+    val quantity: Int,
+    val unit: String,
+    val category: String,
+    val isChecked: Boolean,
+    val notes: String? = null,
+    val productCode: String? = null,
+    val productBrands: String? = null,
+    val productImageUrl: String? = null
+)
+
+@Serializable
+data class EnrichedShoppingList(
+    val id: String,
+    val name: String,
+    val createdAt: String,
+    val updatedAt: String,
+    val isArchived: Boolean,
+    val items: List<EnrichedShoppingItem>
+)

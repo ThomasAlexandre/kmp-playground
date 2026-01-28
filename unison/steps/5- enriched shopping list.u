@@ -74,7 +74,7 @@ shoppingLists.routes =
         upsertShoppingList updatedList
         ok.json (toJson updatedList)
       None      -> notFound.text ("Shopping list not found: " ++ listId)
-  health <|> getEnrichedListById <|> getListById <|> getAllLists <|> createList <|> updateList <|> deleteList <|> addItemToList
+  health <|> addItemToList <|> getEnrichedListById <|> getListById <|> getAllLists <|> createList <|> updateList <|> deleteList
 
 -- Updated main to run both ShoppingListStorage and ProductStorage handlers
 shoppingLists.main : Database -> Database -> HttpRequest ->{Exception, Storage, Remote, Log} HttpResponse

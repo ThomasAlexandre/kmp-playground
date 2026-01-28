@@ -34,12 +34,17 @@ import se.ac.kmp_playground.data.StoreRepository
 import se.ac.kmp_playground.data.SelectedStore
 import se.ac.kmp_playground.data.ShoppingList
 import se.ac.kmp_playground.data.ShoppingListRepository
+import se.ac.kmp_playground.data.ShoppingItem
 import se.ac.kmp_playground.data.EnrichedShoppingList
+import se.ac.kmp_playground.data.EnrichedShoppingItem
 import se.ac.kmp_playground.data.User
 import se.ac.kmp_playground.data.UserRepository
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
+import androidx.compose.material3.AlertDialog
+import androidx.compose.foundation.layout.height
+import androidx.compose.ui.window.DialogProperties
 
 val shoppingListItems = listOf(
     "Milk", "Bread", "Eggs", "Butter", "Cheese",
@@ -125,6 +130,7 @@ fun ProfileTab(
     storeRepository: StoreRepository = remember { StoreRepository() },
     userRepository: UserRepository = remember { UserRepository() },
     shoppingListRepository: ShoppingListRepository = remember { ShoppingListRepository() },
+    productRepository: ProductRepository = remember { ProductRepository() },
     currentUserId: String = "usr_a1b2c3d4"
 ) {
     var showContent by remember { mutableStateOf(false) }
@@ -134,6 +140,9 @@ fun ProfileTab(
     var selectedShoppingListId by remember { mutableStateOf<String?>(null) }
     var user by remember { mutableStateOf<User?>(null) }
     var hasInitializedSelection by remember { mutableStateOf(false) }
+    var showProductPicker by remember { mutableStateOf(false) }
+    var availableProducts by remember { mutableStateOf<List<Product>>(emptyList()) }
+    var productSearchQuery by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     val selectionCount = selectedSupermarkets.size
     val isValidSelection = selectionCount in 1..5
@@ -418,28 +427,44 @@ fun ProfileTab(
                 }
             }
             is EnrichedShoppingListUiState.Success -> {
+                val currentList = enrichedState.enrichedList
+
                 Column {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        TextButton(
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(
+                                onClick = {
+                                    enrichedListUiState = EnrichedShoppingListUiState.Idle
+                                    selectedShoppingListId = null
+                                }
+                            ) {
+                                Text("< Back")
+                            }
+                            Text(
+                                text = currentList.name,
+                                style = MaterialTheme.typography.titleLarge,
+                                modifier = Modifier.padding(start = 8.dp)
+                            )
+                        }
+                        Button(
                             onClick = {
-                                enrichedListUiState = EnrichedShoppingListUiState.Idle
-                                selectedShoppingListId = null
+                                showProductPicker = true
+                                scope.launch {
+                                    productRepository.getAllProducts()
+                                        .onSuccess { products -> availableProducts = products }
+                                }
                             }
                         ) {
-                            Text("< Back")
+                            Text("+ Add Item")
                         }
-                        Text(
-                            text = enrichedState.enrichedList.name,
-                            style = MaterialTheme.typography.titleLarge,
-                            modifier = Modifier.padding(start = 8.dp)
-                        )
                     }
 
                     Text(
-                        text = "${enrichedState.enrichedList.items.size} items",
+                        text = "${currentList.items.size} items",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(vertical = 8.dp)
@@ -448,7 +473,7 @@ fun ProfileTab(
                     LazyColumn(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        items(enrichedState.enrichedList.items) { item ->
+                        items(currentList.items) { item ->
                             Card(
                                 modifier = Modifier.fillMaxWidth(),
                                 colors = CardDefaults.cardColors(
@@ -508,13 +533,144 @@ fun ProfileTab(
                                         Text(
                                             text = "✓",
                                             style = MaterialTheme.typography.titleMedium,
-                                            color = MaterialTheme.colorScheme.primary
+                                            color = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.padding(end = 8.dp)
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            scope.launch {
+                                                // Get the current list, filter out the item, and update
+                                                shoppingListRepository.getShoppingListById(currentList.id)
+                                                    .onSuccess { fullList ->
+                                                        val updatedItems = fullList.items.filter { it.code != item.id }
+                                                        val updatedList = fullList.copy(items = updatedItems)
+                                                        shoppingListRepository.updateShoppingList(updatedList)
+                                                            .onSuccess {
+                                                                // Refresh the enriched list
+                                                                shoppingListRepository.getEnrichedShoppingList(currentList.id)
+                                                                    .onSuccess { refreshedList ->
+                                                                        enrichedListUiState = EnrichedShoppingListUiState.Success(refreshedList)
+                                                                    }
+                                                            }
+                                                    }
+                                            }
+                                        }
+                                    ) {
+                                        Text(
+                                            text = "×",
+                                            style = MaterialTheme.typography.titleLarge,
+                                            color = MaterialTheme.colorScheme.error
                                         )
                                     }
                                 }
                             }
                         }
                     }
+                }
+
+                // Product Picker Dialog
+                if (showProductPicker) {
+                    AlertDialog(
+                        onDismissRequest = {
+                            showProductPicker = false
+                            productSearchQuery = ""
+                        },
+                        title = { Text("Add Item") },
+                        text = {
+                            Column {
+                                OutlinedTextField(
+                                    value = productSearchQuery,
+                                    onValueChange = { productSearchQuery = it },
+                                    placeholder = { Text("Search products...") },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true
+                                )
+
+                                val filteredProducts = remember(productSearchQuery, availableProducts) {
+                                    if (productSearchQuery.isBlank()) {
+                                        availableProducts.take(20)
+                                    } else {
+                                        availableProducts.filter {
+                                            it.productName.contains(productSearchQuery, ignoreCase = true) ||
+                                            it.brands.contains(productSearchQuery, ignoreCase = true)
+                                        }.take(20)
+                                    }
+                                }
+
+                                LazyColumn(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(300.dp)
+                                        .padding(top = 8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    if (availableProducts.isEmpty()) {
+                                        item {
+                                            Box(
+                                                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                                            }
+                                        }
+                                    } else {
+                                        items(filteredProducts) { product ->
+                                            Card(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clickable {
+                                                        scope.launch {
+                                                            val newItem = ShoppingItem(
+                                                                code = product.barcode,
+                                                                quantity = 1,
+                                                                isChecked = false
+                                                            )
+                                                            shoppingListRepository.addItemToList(currentList.id, newItem)
+                                                                .onSuccess {
+                                                                    // Refresh the enriched list
+                                                                    shoppingListRepository.getEnrichedShoppingList(currentList.id)
+                                                                        .onSuccess { refreshedList ->
+                                                                            enrichedListUiState = EnrichedShoppingListUiState.Success(refreshedList)
+                                                                        }
+                                                                    showProductPicker = false
+                                                                    productSearchQuery = ""
+                                                                }
+                                                        }
+                                                    },
+                                                colors = CardDefaults.cardColors(
+                                                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                                                )
+                                            ) {
+                                                Column(modifier = Modifier.padding(12.dp)) {
+                                                    Text(
+                                                        text = product.productName,
+                                                        style = MaterialTheme.typography.bodyMedium
+                                                    )
+                                                    if (product.brands.isNotBlank()) {
+                                                        Text(
+                                                            text = product.brands,
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        confirmButton = {},
+                        dismissButton = {
+                            TextButton(onClick = {
+                                showProductPicker = false
+                                productSearchQuery = ""
+                            }) {
+                                Text("Cancel")
+                            }
+                        }
+                    )
                 }
             }
         }

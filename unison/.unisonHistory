@@ -1,3 +1,8 @@
+run shoppingLists.deployCloud
+update
+run shoppingLists.deployCloud
+update
+projects
 update
 ls
 update

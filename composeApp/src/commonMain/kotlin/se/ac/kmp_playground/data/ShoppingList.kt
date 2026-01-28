@@ -8,7 +8,16 @@ data class ShoppingList(
     val name: String,
     val createdAt: String,
     val updatedAt: String,
-    val isArchived: Boolean
+    val isArchived: Boolean,
+    val items: List<ShoppingItem> = emptyList()
+)
+
+@Serializable
+data class ShoppingItem(
+    val code: String,
+    val quantity: Int,
+    val isChecked: Boolean = false,
+    val notes: String? = null
 )
 
 @Serializable

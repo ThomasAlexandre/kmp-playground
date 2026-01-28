@@ -1,0 +1,12 @@
+-- Make isChecked optional in ShoppingItem decoder, defaulting to false
+
+ShoppingItem.decoder : '{Decoder} ShoppingItem
+ShoppingItem.decoder = do
+  use Decoder text
+  use object at!
+  code = at! "code" text
+  quantity = at! "quantity" Decoder.nat
+  isCheckedOpt = optionalAt! "isChecked" Decoder.boolean
+  isChecked = Optional.getOrElse false isCheckedOpt
+  notes = optionalAt! "notes" text
+  ShoppingItem code quantity isChecked notes

@@ -1,0 +1,112 @@
+-- Updated shopping-lists routes with ProductStorage for call graph optimization
+-- This allows direct access to product data without HTTP calls
+
+shoppingLists.routes : '{Route, ShoppingListStorage, ProductStorage, Exception, Log} ()
+shoppingLists.routes =
+  use Parser /
+  use Route <|>
+  use ShoppingList createdAt isArchived listName toJson updatedAt
+  use Text ++
+  health = do
+    noCapture GET (s "health")
+    ok.text "ok"
+  getAllLists = do
+    noCapture GET (s "lists")
+    info "Getting all shopping lists" []
+    lists = getAllShoppingLists()
+    json = Json.array (List.map toJson lists)
+    ok.json json
+  getListById = do
+    listId = route GET (s "lists" / Parser.text)
+    info "Getting shopping list" [("id", listId)]
+    match getShoppingList (ShoppingListId listId) with
+      Some list -> ok.json (toJson list)
+      None      -> notFound.text ("Shopping list not found: " ++ listId)
+  -- New endpoint: Get enriched shopping list with product data via call graph optimization
+  getEnrichedListById = do
+    listId = route GET (s "lists" / Parser.text / s "enriched")
+    info "Getting enriched shopping list" [("id", listId)]
+    match getShoppingList (ShoppingListId listId) with
+      Some list ->
+        enrichItem item =
+          productData = ProductStorage.getProduct (ProductCode (ShoppingItem.code item))
+          match productData with
+            Some product -> EnrichedShoppingItem (ShoppingItem.code item) (Product.productName product) (ShoppingItem.quantity item) "unit" "category" (ShoppingItem.isChecked item) (ShoppingItem.notes item) (Some (Product.barcode product)) (Some (Product.brands product)) (Some (Product.productImageUrl product))
+            None -> EnrichedShoppingItem (ShoppingItem.code item) ("Unknown product: " ++ ShoppingItem.code item) (ShoppingItem.quantity item) "unit" "category" (ShoppingItem.isChecked item) (ShoppingItem.notes item) None None None
+        enrichedItems = List.map enrichItem (ShoppingList.items list)
+        enrichedList = EnrichedShoppingList (ShoppingList.listId list) (listName list) (createdAt list) (updatedAt list) (isArchived list) enrichedItems
+        ok.json (EnrichedShoppingList.toJson enrichedList)
+      None -> notFound.text ("Shopping list not found: " ++ listId)
+  createList = do
+    noCapture POST (s "lists")
+    list = decodeJson ShoppingList.decoder
+    info "Creating shopping list" [("id", ShoppingList.listId list)]
+    upsertShoppingList list
+    setStatus (Status 201 "Created")
+    ok.json (toJson list)
+  updateList = do
+    listId = route PUT (s "lists" / Parser.text)
+    list = decodeJson ShoppingList.decoder
+    info "Updating shopping list" [("id", listId)]
+    match getShoppingList (ShoppingListId listId) with
+      Some _ ->
+        updatedList = ShoppingList listId (listName list) (createdAt list) (updatedAt list) (isArchived list) (items list)
+        upsertShoppingList updatedList
+        ok.json (toJson updatedList)
+      None   -> notFound.text ("Shopping list not found: " ++ listId)
+  deleteList = do
+    listId = route DELETE (s "lists" / Parser.text)
+    info "Deleting shopping list" [("id", listId)]
+    match getShoppingList (ShoppingListId listId) with
+      Some _ ->
+        deleteShoppingList (ShoppingListId listId)
+        ok.text "Deleted"
+      None   -> notFound.text ("Shopping list not found: " ++ listId)
+  addItemToList = do
+    use List :+
+    listId = route POST (s "lists" / Parser.text / s "items")
+    item = decodeJson ShoppingItem.decoder
+    info "Adding item to shopping list" [("listId", listId), ("code", code item)]
+    match getShoppingList (ShoppingListId listId) with
+      Some list ->
+        updatedItems = items list :+ item
+        updatedList = ShoppingList (ShoppingList.listId list) (listName list) (createdAt list) (updatedAt list) (isArchived list) updatedItems
+        upsertShoppingList updatedList
+        ok.json (toJson updatedList)
+      None      -> notFound.text ("Shopping list not found: " ++ listId)
+  health <|> getEnrichedListById <|> getListById <|> getAllLists <|> createList <|> updateList <|> deleteList <|> addItemToList
+
+-- Updated main to run both ShoppingListStorage and ProductStorage handlers
+shoppingLists.main : Database -> Database -> HttpRequest ->{Exception, Storage, Remote, Log} HttpResponse
+shoppingLists.main shoppingListsDb productsDb req =
+  ShoppingListStorage.run shoppingListsDb do
+    ProductStorage.run productsDb do
+      Route.run shoppingLists.routes req
+
+shoppingLists.mainWithCors : Database -> Database -> HttpRequest ->{Exception, Storage, Remote, Log} HttpResponse
+shoppingLists.mainWithCors shoppingListsDb productsDb req =
+  if isOptionsMethod req then addCorsHeaders (unison_http_14_0_0.HttpResponse.ok Body.empty)
+  else addCorsHeaders (shoppingLists.main shoppingListsDb productsDb req)
+
+shoppingLists.deployLocal : '{IO, Exception} URI
+shoppingLists.deployLocal = main.local.serve do
+  env = Environment.default()
+  shoppingListsDb = Database.named "shopping-lists-db"
+  productsDb = Database.named "products-db"
+  Database.assign shoppingListsDb env
+  Database.assign productsDb env
+  hash = deployHttp env (shoppingLists.mainWithCors shoppingListsDb productsDb)
+  name = ServiceName.named "shopping-lists-api"
+  ServiceName.assign name hash
+
+shoppingLists.deployCloud : '{IO, Exception} ServiceHash HttpRequest HttpResponse
+shoppingLists.deployCloud = Cloud.main do
+  env = Environment.default()
+  shoppingListsDb = Database.named "shopping-lists-db"
+  productsDb = Database.named "products-db"
+  Database.assign shoppingListsDb env
+  Database.assign productsDb env
+  hash = deployHttp env (shoppingLists.mainWithCors shoppingListsDb productsDb)
+  name = ServiceName.named "shopping-lists-api"
+  _ = ServiceName.assign name hash
+  hash

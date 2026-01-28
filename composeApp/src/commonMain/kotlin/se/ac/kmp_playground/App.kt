@@ -32,6 +32,8 @@ import se.ac.kmp_playground.data.ProductRepository
 import se.ac.kmp_playground.data.Store
 import se.ac.kmp_playground.data.StoreRepository
 import se.ac.kmp_playground.data.SelectedStore
+import se.ac.kmp_playground.data.ShoppingList
+import se.ac.kmp_playground.data.ShoppingListRepository
 import se.ac.kmp_playground.data.User
 import se.ac.kmp_playground.data.UserRepository
 
@@ -118,10 +120,12 @@ fun ProfileTab(
     onSelectionChanged: (Set<String>) -> Unit,
     storeRepository: StoreRepository = remember { StoreRepository() },
     userRepository: UserRepository = remember { UserRepository() },
+    shoppingListRepository: ShoppingListRepository = remember { ShoppingListRepository() },
     currentUserId: String = "usr_a1b2c3d4"
 ) {
     var showContent by remember { mutableStateOf(false) }
     var storesUiState by remember { mutableStateOf<StoresUiState>(StoresUiState.Loading) }
+    var shoppingListsUiState by remember { mutableStateOf<ShoppingListsUiState>(ShoppingListsUiState.Loading) }
     var user by remember { mutableStateOf<User?>(null) }
     var hasInitializedSelection by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -137,6 +141,19 @@ fun ProfileTab(
         userRepository.getUserById(currentUserId)
             .onSuccess { loadedUser -> user = loadedUser }
             .onFailure { /* User not found is OK, just won't pre-select */ }
+    }
+
+    // Load shopping lists when user is loaded
+    LaunchedEffect(user) {
+        user?.let { loadedUser ->
+            if (loadedUser.shoppingListIds.isNotEmpty()) {
+                shoppingListRepository.getShoppingListsByIds(loadedUser.shoppingListIds)
+                    .onSuccess { lists -> shoppingListsUiState = ShoppingListsUiState.Success(lists) }
+                    .onFailure { error -> shoppingListsUiState = ShoppingListsUiState.Error(error.message ?: "Unknown error") }
+            } else {
+                shoppingListsUiState = ShoppingListsUiState.Success(emptyList())
+            }
+        }
     }
 
     // Pre-select stores based on user's selectedStores when both are loaded
@@ -233,7 +250,8 @@ fun ProfileTab(
             }
             is StoresUiState.Success -> {
                 LazyColumn(
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier.weight(1f)
                 ) {
                     items(state.stores) { store ->
                         val isSelected = store.name in selectedSupermarkets
@@ -294,6 +312,62 @@ fun ProfileTab(
                 }
             }
         }
+
+        HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
+
+        Text(
+            text = "Your Shopping Lists",
+            style = MaterialTheme.typography.titleLarge
+        )
+
+        when (val listsState = shoppingListsUiState) {
+            is ShoppingListsUiState.Loading -> {
+                Box(
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                }
+            }
+            is ShoppingListsUiState.Error -> {
+                Text(
+                    text = "Failed to load shopping lists",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(vertical = 8.dp)
+                )
+            }
+            is ShoppingListsUiState.Success -> {
+                if (listsState.shoppingLists.isEmpty()) {
+                    Text(
+                        text = "No shopping lists yet",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 8.dp)
+                    )
+                } else {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.padding(top = 8.dp)
+                    ) {
+                        listsState.shoppingLists.forEach { shoppingList ->
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surface
+                                )
+                            ) {
+                                Text(
+                                    text = shoppingList.name,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    modifier = Modifier.padding(16.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -307,6 +381,12 @@ sealed class StoresUiState {
     data object Loading : StoresUiState()
     data class Success(val stores: List<Store>) : StoresUiState()
     data class Error(val message: String) : StoresUiState()
+}
+
+sealed class ShoppingListsUiState {
+    data object Loading : ShoppingListsUiState()
+    data class Success(val shoppingLists: List<ShoppingList>) : ShoppingListsUiState()
+    data class Error(val message: String) : ShoppingListsUiState()
 }
 
 @Composable

@@ -238,6 +238,113 @@ curl -X POST https://thomasalexandre.unison-services.cloud/s/users-api/users \
   }'
 ```
 
+### Prices API
+
+**Base URL:** `https://thomasalexandre.unison-services.cloud/s/prices-api`
+
+#### Data Model
+
+**ProductIdentifier** (two variants):
+```json
+// Universal barcode (EAN/UPC)
+{"type": "barcode", "code": "7310865005168"}
+
+// Store-specific code (for fresh food, bakery items, etc.)
+{"type": "store_specific", "storeId": "4933", "code": "BREAD-001"}
+```
+
+**PriceRecord**:
+```json
+{
+  "price": "24.90",
+  "currency": "SEK",
+  "unit": "per_item"  // or "per_kg", "per_100g", "per_liter"
+}
+```
+
+**RecordPriceRequest**:
+```json
+{
+  "product": {"type": "barcode", "code": "7310865005168"},
+  "storeId": "4933",
+  "price": {
+    "price": "24.90",
+    "currency": "SEK",
+    "unit": "per_item"
+  }
+}
+```
+
+#### Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/health` | Health check |
+| POST | `/prices` | Record a new price observation |
+| GET | `/prices/barcode/:code?storeId=X` | Get latest price for a barcode at a store |
+| GET | `/prices/barcode/:code/history?storeId=X` | Get price history for a barcode at a store |
+| GET | `/prices/barcode/:code/compare` | Compare prices across all stores |
+| GET | `/stores/:storeId/prices` | Get all latest prices at a store |
+
+#### Example Requests
+
+```bash
+# Record a new price
+curl -X POST https://thomasalexandre.unison-services.cloud/s/prices-api/prices \
+  -H "Content-Type: application/json" \
+  -d '{
+    "product": {"type": "barcode", "code": "7310865005168"},
+    "storeId": "4933",
+    "price": {
+      "price": "24.90",
+      "currency": "SEK",
+      "unit": "per_item"
+    }
+  }'
+
+# Get latest price for a product at a specific store
+curl "https://thomasalexandre.unison-services.cloud/s/prices-api/prices/barcode/7310865005168?storeId=4933"
+
+# Get price history
+curl "https://thomasalexandre.unison-services.cloud/s/prices-api/prices/barcode/7310865005168/history?storeId=4933"
+
+# Compare prices across stores
+curl https://thomasalexandre.unison-services.cloud/s/prices-api/prices/barcode/7310865005168/compare
+
+# Get all prices at a store
+curl https://thomasalexandre.unison-services.cloud/s/prices-api/stores/4933/prices
+```
+
+#### Response Examples
+
+**Latest price response:**
+```json
+{
+  "recordedAt": "2024-06-15T14:30:00Z",
+  "price": {
+    "price": "24.90",
+    "currency": "SEK",
+    "unit": "per_item"
+  }
+}
+```
+
+**Compare prices response:**
+```json
+[
+  {
+    "storeId": "4933",
+    "recordedAt": "2024-06-15T14:30:00Z",
+    "price": {"price": "24.90", "currency": "SEK", "unit": "per_item"}
+  },
+  {
+    "storeId": "5012",
+    "recordedAt": "2024-06-14T10:15:00Z",
+    "price": {"price": "26.50", "currency": "SEK", "unit": "per_item"}
+  }
+]
+```
+
 ### Other APIs
 
 | API | Base URL | Description |

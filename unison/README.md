@@ -271,7 +271,8 @@ curl -X POST https://thomasalexandre.unison-services.cloud/s/users-api/users \
     "price": "24.90",
     "currency": "SEK",
     "unit": "per_item"
-  }
+  },
+  "recordedAt": "2024-06-15T14:30:00Z"
 }
 ```
 
@@ -299,7 +300,8 @@ curl -X POST https://thomasalexandre.unison-services.cloud/s/prices-api/prices \
       "price": "24.90",
       "currency": "SEK",
       "unit": "per_item"
-    }
+    },
+    "recordedAt": "2024-06-15T14:30:00Z"
   }'
 
 # Get latest price for a product at a specific store

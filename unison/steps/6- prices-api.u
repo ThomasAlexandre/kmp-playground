@@ -1,161 +1,74 @@
-type StoreId
-  = StoreId Nat
-
-type ProductIdentifier
-  = StoreSpecific StoreId Text
-  | UniversalBarcode Text
-
-type PriceUnit
-  = PerItem
-  | PerKg
-  | Per100g
-  | PerLiter
-
-type PriceRecord
-  = { priceValue : Text, currency : Text, unit : PriceUnit }
-
-farFuture : Instant
-farFuture = fromEpochSeconds +253402300800
-
-PriceUnit.toText : PriceUnit -> Text
-PriceUnit.toText = cases
-  PriceUnit.PerItem  -> "per_item"
-  PriceUnit.PerKg    -> "per_kg"
-  PriceUnit.Per100g  -> "per_100g"
-  PriceUnit.PerLiter -> "per_liter"
-
-PriceUnit.fromText : Text -> Optional PriceUnit
-PriceUnit.fromText = cases
-  "per_item"  -> Some PriceUnit.PerItem
-  "per_kg"    -> Some PriceUnit.PerKg
-  "per_100g"  -> Some PriceUnit.Per100g
-  "per_liter" -> Some PriceUnit.PerLiter
-  _           -> None
-
-PriceUnit.decoder : '{Decoder} PriceUnit
-PriceUnit.decoder = do
-  use Text ++
-  txt = Decoder.text()
-  match PriceUnit.fromText txt with
-    Some u -> u
-    None   -> Decoder.fail ("Invalid price unit: " ++ txt)
-
-ProductIdentifier.toJson : ProductIdentifier -> Json
-ProductIdentifier.toJson = cases
-  ProductIdentifier.UniversalBarcode code ->
-    Json.object [("type", Json.text "barcode"), ("code", Json.text code)]
-  ProductIdentifier.StoreSpecific (StoreId.StoreId sid) code ->
-    Json.object
-      [ ("type", Json.text "store_specific")
-      , ("storeId", Json.text (Nat.toText sid))
-      , ("code", Json.text code)
-      ]
-
-ProductIdentifier.decoder : '{Decoder} ProductIdentifier
-ProductIdentifier.decoder =
-  do
-    use Decoder text
-    use Text ++
-    use object at!
-    idType = at! "type" text
-    code = at! "code" text
-    match idType with
-      "barcode" -> ProductIdentifier.UniversalBarcode code
-      "store_specific" ->
-        sidText = at! "storeId" text
-        sid = match Nat.fromText sidText with
-          Some n -> n
-          None -> Decoder.fail ("Invalid storeId, expected number: " ++ sidText)
-        ProductIdentifier.StoreSpecific (StoreId.StoreId sid) code
-      _ -> Decoder.fail ("Invalid product identifier type: " ++ idType)
-
-PriceRecord.toJson : PriceRecord -> Json
-PriceRecord.toJson record =
-  use Json text
-  Json.object
-    [ ("price", text (PriceRecord.priceValue record))
-    , ("currency", text (PriceRecord.currency record))
-    , ("unit", text (PriceUnit.toText (PriceRecord.unit record)))
-    ]
-
-PriceRecord.decoder : '{Decoder} PriceRecord
-PriceRecord.decoder = do
-  use Decoder text
-  use object at!
-  priceValue = at! "price" text
-  currency = at! "currency" text
-  unit = at! "unit" PriceUnit.decoder
-  PriceRecord.PriceRecord priceValue currency unit
-
+-- Updated RecordPriceRequest with recordedAt field
 type RecordPriceRequest
-  = { product : ProductIdentifier, storeId : Nat, priceRecord : PriceRecord }
+  = { product : ProductIdentifier
+    , storeId : Nat
+    , priceRecord : PriceRecord
+    , recordedAt : Instant
+    }
 
 RecordPriceRequest.decoder : '{Decoder} RecordPriceRequest
 RecordPriceRequest.decoder = do
-  use object at!
   use Text ++
+  use Decoder.object at!
   product = at! "product" ProductIdentifier.decoder
   storeIdText = at! "storeId" Decoder.text
   storeId = match Nat.fromText storeIdText with
     Some n -> n
     None -> Decoder.fail ("Invalid storeId, expected number: " ++ storeIdText)
   priceRecord = at! "price" PriceRecord.decoder
-  RecordPriceRequest.RecordPriceRequest product storeId priceRecord
+  recordedAtText = at! "recordedAt" Decoder.text
+  recordedAt = match Instant.fromIso8601 recordedAtText with
+    Some instant -> instant
+    None -> Decoder.fail ("Invalid recordedAt, expected ISO8601 date: " ++ recordedAtText)
+  RecordPriceRequest product storeId priceRecord recordedAt
 
+-- Updated PriceStorage ability with Instant parameter
 structural ability PriceStorage where
-  getLatestPrice :
-    ProductIdentifier
-    -> StoreId
-    ->{PriceStorage} Optional (Instant, PriceRecord)
-  getPricesAcrossStores :
-    ProductIdentifier ->{PriceStorage} [(StoreId, Instant, PriceRecord)]
-  getPriceHistory :
-    ProductIdentifier -> StoreId ->{PriceStorage} [(Instant, PriceRecord)]
-  getLatestPricesAtStore :
-    StoreId ->{PriceStorage} [(ProductIdentifier, Instant, PriceRecord)]
-  recordPrice : ProductIdentifier -> StoreId -> PriceRecord ->{PriceStorage} ()
+  recordPrice : ProductIdentifier -> StoreId -> Instant -> PriceRecord ->{PriceStorage} ()
+  getLatestPrice : ProductIdentifier -> StoreId ->{PriceStorage} Optional (Instant, PriceRecord)
+  getPriceHistory : ProductIdentifier -> StoreId ->{PriceStorage} [(Instant, PriceRecord)]
+  getPricesAcrossStores : ProductIdentifier ->{PriceStorage} [(StoreId, Instant, PriceRecord)]
+  getLatestPricesAtStore : StoreId ->{PriceStorage} [(ProductIdentifier, Instant, PriceRecord)]
 
+-- Updated handler to use provided instant instead of Remote.now()
 PriceStorage.run : Database -> '{g, PriceStorage} a ->{g, Remote} a
 PriceStorage.run db computation =
   use OrderedTable named rangeClosed write
-  use ProductIdentifier UniversalBarcode
-  use StoreId StoreId
   use Stream toList
   use Universal ordering
   productIndex = named db "prices_by_product" ordering
   storeIndex = named db "prices_by_store" ordering
   go : Request {PriceStorage} a ->{g, Remote} a
   go = cases
-    { a }                                                           -> a
-    { PriceStorage.recordPrice productId storeId record -> resume } ->
-      now = Remote.now()
-      primaryKey = (productId, storeId, now)
-      secondaryKey = (storeId, productId, now)
+    { a } -> a
+    { recordPrice productId storeId instant record -> resume } ->
+      primaryKey = (productId, storeId, instant)
+      secondaryKey = (storeId, productId, instant)
       write productIndex primaryKey record
       write storeIndex secondaryKey record
       handle resume() with go
-    { PriceStorage.getLatestPrice productId storeId -> resume }     ->
+    { getLatestPrice productId storeId -> resume } ->
       startKey = (productId, storeId, epoch)
       endKey = (productId, storeId, farFuture)
       entries = toList (rangeClosed productIndex startKey endKey)
       result = match List.last entries with
-        None                           -> None
+        None -> None
         Some ((_, _, instant), record) -> Some (instant, record)
       handle resume result with go
-    { PriceStorage.getPriceHistory productId storeId -> resume }    ->
+    { getPriceHistory productId storeId -> resume } ->
       startKey = (productId, storeId, epoch)
       endKey = (productId, storeId, farFuture)
       entries = toList (rangeClosed productIndex startKey endKey)
       extractEntry = cases ((_, _, instant), record) -> (instant, record)
       history = List.reverse (List.map extractEntry entries)
       handle resume history with go
-    { PriceStorage.getPricesAcrossStores productId -> resume }      ->
+    { getPricesAcrossStores productId -> resume } ->
       startKey = (productId, StoreId 0, epoch)
-      endKey = (productId, StoreId Nat.maxNat, farFuture)
+      endKey = (productId, StoreId maxNat, farFuture)
       allEntries = toList (rangeClosed productIndex startKey endKey)
       latestByStore = groupLatestByStore allEntries
       handle resume latestByStore with go
-    { PriceStorage.getLatestPricesAtStore storeId -> resume }       ->
+    { getLatestPricesAtStore storeId -> resume } ->
       startKey = (storeId, UniversalBarcode "", epoch)
       endKey = (storeId, UniversalBarcode "~", farFuture)
       allEntries = toList (rangeClosed storeIndex startKey endKey)
@@ -163,701 +76,68 @@ PriceStorage.run db computation =
       handle resume latestByProduct with go
   handle computation() with go
 
-groupLatestByStore :
-  [((ProductIdentifier, StoreId, Instant), PriceRecord)]
-  -> [(StoreId, Instant, PriceRecord)]
-groupLatestByStore entries =
-  use Instant >
-  use Map insert
-  go acc = cases
-    [] ->
-      Map.toList acc
-        |> (List.map cases
-          (storeId, (instant, record)) -> (storeId, instant, record))
-    ((_, storeId, instant), record) +: rest ->
-      updated =
-        match Map.get storeId acc with
-          None -> insert storeId (instant, record) acc
-          Some (existingInstant, _) ->
-            if instant > existingInstant then
-              insert storeId (instant, record) acc
-            else acc
-      go updated rest
-  go Map.empty entries
-
-groupLatestByProduct :
-  [((StoreId, ProductIdentifier, Instant), PriceRecord)]
-  -> [(ProductIdentifier, Instant, PriceRecord)]
-groupLatestByProduct entries =
-  use Instant >
-  use Map insert
-  go acc = cases
-    [] ->
-      Map.toList acc
-        |> (List.map cases
-          (productId, (instant, record)) -> (productId, instant, record))
-    ((_, productId, instant), record) +: rest ->
-      updated =
-        match Map.get productId acc with
-          None -> insert productId (instant, record) acc
-          Some (existingInstant, _) ->
-            if instant > existingInstant then
-              insert productId (instant, record) acc
-            else acc
-      go updated rest
-  go Map.empty entries
-
-parseStoreId : Text -> Optional StoreId
-parseStoreId txt = match Nat.fromText txt with
-  Some n -> Some (StoreId n)
-  None -> None
-
-prices.routes : '{Route, Exception, Log, PriceStorage} ()
+-- Updated routes to pass recordedAt from request
+prices.routes : '{Route, PriceStorage, Exception, Log} ()
 prices.routes =
-  use Instant toText
   use Json array object
   use List head map
   use Parser /
-  use ProductIdentifier UniversalBarcode
   use Route <|>
   health = do
     noCapture GET (s "health")
     ok.text "ok"
-  createPrice =
-    do
-      noCapture POST (s "prices")
-      request = decodeJson RecordPriceRequest.decoder
-      info "Recording price" [("storeId", Nat.toText (RecordPriceRequest.storeId request))]
-      PriceStorage.recordPrice
-        (RecordPriceRequest.product request)
-        (StoreId (RecordPriceRequest.storeId request))
-        (RecordPriceRequest.priceRecord request)
-      setStatus (Status 201 "Created")
-      ok.json (object [("status", Json.text "created")])
-  getLatestPriceBarcode =
-    do
-      code = route GET (s "prices" / s "barcode" / Parser.text)
-      storeIds = queryParameter "storeId"
-      match head storeIds with
-        None -> badRequest.text "Missing storeId query parameter"
-        Some storeIdText ->
-          match parseStoreId storeIdText with
-            None -> badRequest.text "Invalid storeId, expected number"
-            Some storeId ->
-              match PriceStorage.getLatestPrice (UniversalBarcode code) storeId with
-                None -> notFound.text "Price not found"
-                Some (instant, record) ->
-                  json =
-                    object
-                      [ ("recordedAt", Json.text (toText instant))
-                      , ("price", PriceRecord.toJson record)
-                      ]
-                  ok.json json
-  getPriceHistoryBarcode =
-    do
-      code = route GET (s "prices" / s "barcode" / Parser.text / s "history")
-      storeIds = queryParameter "storeId"
-      match head storeIds with
-        None -> badRequest.text "Missing storeId query parameter"
-        Some storeIdText ->
-          match parseStoreId storeIdText with
-            None -> badRequest.text "Invalid storeId, expected number"
-            Some storeId ->
-              history = PriceStorage.getPriceHistory (UniversalBarcode code) storeId
-              entryToJson = cases
-                (instant, record) ->
-                  object
-                    [ ("recordedAt", Json.text (toText instant))
-                    , ("price", PriceRecord.toJson record)
-                    ]
-              ok.json (array (map entryToJson history))
-  comparePricesBarcode =
-    do
-      code = route GET (s "prices" / s "barcode" / Parser.text / s "compare")
-      prices = PriceStorage.getPricesAcrossStores (UniversalBarcode code)
-      entryToJson = cases
-        (StoreId sid, instant, record) ->
-          object
-            [ ("storeId", Json.text (Nat.toText sid))
-            , ("recordedAt", Json.text (toText instant))
-            , ("price", PriceRecord.toJson record)
-            ]
-      ok.json (array (map entryToJson prices))
-  getStorePricesRoute =
-    do
-      storeIdText = route GET (s "stores" / Parser.text / s "prices")
-      match parseStoreId storeIdText with
-        None -> badRequest.text "Invalid storeId, expected number"
-        Some storeId ->
-          prices = PriceStorage.getLatestPricesAtStore storeId
-          entryToJson = cases
-            (productId, instant, record) ->
-              object
-                [ ("product", ProductIdentifier.toJson productId)
-                , ("recordedAt", Json.text (toText instant))
-                , ("price", PriceRecord.toJson record)
-                ]
-          ok.json (array (map entryToJson prices))
-  health
-    <|> createPrice
-    <|> getLatestPriceBarcode
-    <|> getPriceHistoryBarcode
-    <|> comparePricesBarcode
-    <|> getStorePricesRoute
-
-prices.main :
-  Database -> HttpRequest ->{Exception, Storage, Remote, Log} HttpResponse
-prices.main db req = PriceStorage.run db do Route.run prices.routes req
-
-addCorsHeaders : HttpResponse -> HttpResponse
-addCorsHeaders response =
-  use HttpResponse addHeader
-  response
-    |> addHeader "Access-Control-Allow-Origin" "*"
-    |> addHeader
-         "Access-Control-Allow-Methods" "GET, POST, PUT, DELETE, OPTIONS"
-    |> addHeader "Access-Control-Allow-Headers" "Content-Type, Authorization"
-
-isOptionsMethod : HttpRequest -> Boolean
-isOptionsMethod req = match HttpRequest.method req with
-  OPTIONS -> true
-  _       -> false
-
-prices.mainWithCors :
-  Database -> HttpRequest ->{Exception, Storage, Remote, Log} HttpResponse
-prices.mainWithCors db req =
-  if isOptionsMethod req then
-    addCorsHeaders (unison_http_14_0_0.HttpResponse.ok Body.empty)
-  else addCorsHeaders (prices.main db req)
-
-prices.deployLocal : '{IO, Exception} URI
-prices.deployLocal = main.local.serve do
-  env = Environment.default()
-  db = Database.named "prices-db"
-  Database.assign db env
-  hash = deployHttp env (prices.mainWithCors db)
-  name = ServiceName.named "prices-api"
-  ServiceName.assign name hash
-
-prices.deployCloud : '{IO, Exception} ServiceHash HttpRequest HttpResponse
-prices.deployCloud = Cloud.main do
-  env = Environment.default()
-  db = Database.named "prices-db"
-  Database.assign db env
-  hash = deployHttp env (prices.mainWithCors db)
-  name = ServiceName.named "prices-api"
-  _ = ServiceName.assign name hash
-  hash
-
--- The definitions below no longer typecheck with the changes above.
--- Please fix the errors and try `update` again.
-
-ability StoreStorage where
-  delete : StoreId ->{StoreStorage} ()
-  get : StoreId ->{StoreStorage} Optional Store
-  upsert : Store ->{StoreStorage} ()
-  getAll : '{StoreStorage} [Store]
-
-shoppingLists.deployCloud :
-  '{IO, Exception} ServiceHash HttpRequest HttpResponse
-shoppingLists.deployCloud = Cloud.main do
-  env = Environment.default()
-  shoppingListsDb = Database.named "shopping-lists-db"
-  productsDb = Database.named "products-db"
-  Database.assign shoppingListsDb env
-  Database.assign productsDb env
-  hash = deployHttp env (shoppingLists.mainWithCors shoppingListsDb productsDb)
-  name = ServiceName.named "shopping-lists-api"
-  _ = ServiceName.assign name hash
-  hash
-
-shoppingLists.deployLocal : '{IO, Exception} URI
-shoppingLists.deployLocal = main.local.serve do
-  env = Environment.default()
-  shoppingListsDb = Database.named "shopping-lists-db"
-  productsDb = Database.named "products-db"
-  Database.assign shoppingListsDb env
-  Database.assign productsDb env
-  hash = deployHttp env (shoppingLists.mainWithCors shoppingListsDb productsDb)
-  name = ServiceName.named "shopping-lists-api"
-  ServiceName.assign name hash
-
-shoppingLists.mainWithCors :
-  Database
-  -> Database
-  -> HttpRequest
-  ->{Exception, Storage, Remote, Log} HttpResponse
-shoppingLists.mainWithCors shoppingListsDb productsDb req =
-  if isOptionsMethod req then
-    addCorsHeaders (unison_http_14_0_0.HttpResponse.ok Body.empty)
-  else addCorsHeaders (shoppingLists.main shoppingListsDb productsDb req)
-
-stores.deployLocal : '{IO, Exception} URI
-stores.deployLocal = main.local.serve do
-  env = Environment.default()
-  db = Database.named "stores-db"
-  Database.assign db env
-  hash = deployHttp env (stores.main db)
-  name = ServiceName.named "stores-api"
-  ServiceName.assign name hash
-
-stores.main :
-  Database -> HttpRequest ->{Exception, Storage, Remote, Log} HttpResponse
-stores.main db req = StoreStorage.run db do Route.run stores.routes req
-
-stores.routes : '{StoreStorage, Route, Exception, Log} ()
-stores.routes =
-  use Nat toText
-  use Parser / nat
-  use Route <|>
-  use Store decoder toJson
-  use StoreStorage get upsert
-  use Text ++
-  health = do
-    noCapture GET (s "health")
-    ok.text "ok"
-  getAllStores = do
-    noCapture GET (s "stores")
-    info "Getting all stores" []
-    stores = getAll()
-    json = Json.array (List.map toJson stores)
-    ok.json json
-  getStoreById = do
-    storeId = route GET (s "stores" / nat)
-    info "Getting store" [("id", toText storeId)]
-    match get (StoreId storeId) with
-      Some store -> ok.json (toJson store)
-      None       -> notFound.text ("Store not found: " ++ toText storeId)
-  createStore = do
-    noCapture POST (s "stores")
-    store = decodeJson decoder
-    info "Creating store" [("id", toText (Store.id store))]
-    upsert store
-    setStatus (Status 201 "Created")
-    ok.json (toJson store)
-  updateStore =
-    do
-      storeId = route PUT (s "stores" / nat)
-      store = decodeJson decoder
-      info "Updating store" [("id", toText storeId)]
-      match get (StoreId storeId) with
-        Some _ ->
-          updatedStore =
-            Store
-              storeId
-              (Store.key store)
-              (Store.name store)
-              (lon store)
-              (lat store)
-              (address store)
-              (postalCode store)
-              (city store)
-              (imageUrl store)
-          upsert updatedStore
-          ok.json (toJson updatedStore)
-        None -> notFound.text ("Store not found: " ++ toText storeId)
-  deleteStore = do
-    storeId = route DELETE (s "stores" / nat)
-    info "Deleting store" [("id", toText storeId)]
-    match get (StoreId storeId) with
-      Some _ ->
-        StoreStorage.delete (StoreId storeId)
-        ok.text "Deleted"
-      None   -> notFound.text ("Store not found: " ++ toText storeId)
-  health
-    <|> getStoreById
-    <|> getAllStores
-    <|> createStore
-    <|> updateStore
-    <|> deleteStore
-
-StoreStorage.run : Database -> '{g, StoreStorage} a ->{g, Remote} a
-StoreStorage.run db computation =
-  table : OrderedTable Nat Store
-  table = OrderedTable.named db "stores" Universal.ordering
-  go : Request {StoreStorage} a ->{g, Remote} a
-  go = cases
-    { a }                                               -> a
-    { StoreStorage.get (StoreId storeId) -> resume }    ->
-      result = OrderedTable.tryRead table storeId
-      handle resume result with go
-    { StoreStorage.upsert store -> resume }             ->
-      OrderedTable.write table (Store.id store) store
-      handle resume() with go
-    { StoreStorage.delete (StoreId storeId) -> resume } ->
-      OrderedTable.delete table storeId
-      handle resume() with go
-    { getAll () -> resume }                             ->
-      stores = Stream.toList (OrderedTable.toStream table) |> List.map at2
-      handle resume stores with go
-  handle computation() with go
-
-users.deployCloud : '{IO, Exception} ServiceHash HttpRequest HttpResponse
-users.deployCloud = Cloud.main do
-  env = Environment.default()
-  db = Database.named "users-db"
-  Database.assign db env
-  hash = deployHttp env (users.mainWithCors db)
-  name = ServiceName.named "users-api"
-  _ = ServiceName.assign name hash
-  hash
-
-users.deployLocal : '{IO, Exception} URI
-users.deployLocal = main.local.serve do
-  env = Environment.default()
-  db = Database.named "users-db"
-  Database.assign db env
-  hash = deployHttp env (users.mainWithCors db)
-  name = ServiceName.named "users-api"
-  ServiceName.assign name hash
-
-users.mainWithCors :
-  Database -> HttpRequest ->{Exception, Storage, Remote, Log} HttpResponse
-users.mainWithCors db req =
-  if isOptionsMethod req then
-    addCorsHeaders (unison_http_14_0_0.HttpResponse.ok Body.empty)
-  else addCorsHeaders (users.main db req)
-
-
-
----- Anything below this line is ignored by Unison.
-
-
-use lib.unison_cloud_27_2_0
-use lib.unison_cloud_27_2_0.lib.unison_http_14_0_0
-use lib.unison_routes_7_0_2
-use lib.unison_json_1_3_5
-
--- ============================================================================
--- Price Storage API
--- Dual-indexed storage for product prices with cross-store comparison
--- ============================================================================
-
--- ============================================================
--- Types
--- ============================================================
-
-unique type StoreId = StoreId Nat
-
-unique type ProductIdentifier
-  = UniversalBarcode Text
-  | StoreSpecific StoreId Text
-
-unique type PriceUnit
-  = PerItem
-  | PerKg
-  | Per100g
-  | PerLiter
-
-unique type PriceRecord = {
-  priceValue : Text,
-  currency : Text,
-  unit : PriceUnit
-}
-
--- Far-future instant for range queries (year 9999)
-farFuture : Instant
-farFuture = Instant.fromEpochSeconds +253402300800
-
--- ============================================================
--- JSON Encoding/Decoding
--- ============================================================
-
-PriceUnit.toText : PriceUnit -> Text
-PriceUnit.toText = cases
-  PerItem -> "per_item"
-  PerKg -> "per_kg"
-  Per100g -> "per_100g"
-  PerLiter -> "per_liter"
-
-PriceUnit.fromText : Text -> Optional PriceUnit
-PriceUnit.fromText = cases
-  "per_item" -> Some PerItem
-  "per_kg" -> Some PerKg
-  "per_100g" -> Some Per100g
-  "per_liter" -> Some PerLiter
-  _ -> None
-
-PriceUnit.decoder : '{Decoder} PriceUnit
-PriceUnit.decoder = do
-  txt = !Decoder.text
-  match PriceUnit.fromText txt with
-    Some u -> u
-    None -> Decoder.fail ("Invalid price unit: " Text.++ txt)
-
-ProductIdentifier.toJson : ProductIdentifier -> Json
-ProductIdentifier.toJson = cases
-  UniversalBarcode code ->
-    Json.object [("type", Json.text "barcode"), ("code", Json.text code)]
-  StoreSpecific (StoreId sid) code ->
-    Json.object [("type", Json.text "store_specific"), ("storeId", Json.text (Nat.toText sid)), ("code", Json.text code)]
-
-ProductIdentifier.decoder : '{Decoder} ProductIdentifier
-ProductIdentifier.decoder = do
-  use Decoder.object at!
-  idType = at! "type" Decoder.text
-  code = at! "code" Decoder.text
-  match idType with
-    "barcode" -> UniversalBarcode code
-    "store_specific" ->
-      sidText = at! "storeId" Decoder.text
-      sid = match Nat.fromText sidText with
-        Some n -> n
-        None -> Decoder.fail ("Invalid storeId, expected number: " Text.++ sidText)
-      StoreSpecific (StoreId sid) code
-    _ -> Decoder.fail ("Invalid product identifier type: " Text.++ idType)
-
-PriceRecord.toJson : PriceRecord -> Json
-PriceRecord.toJson record =
-  Json.object [("price", Json.text (PriceRecord.priceValue record)), ("currency", Json.text (PriceRecord.currency record)), ("unit", Json.text (PriceUnit.toText (PriceRecord.unit record)))]
-
-PriceRecord.decoder : '{Decoder} PriceRecord
-PriceRecord.decoder = do
-  use Decoder.object at!
-  priceValue = at! "price" Decoder.text
-  currency = at! "currency" Decoder.text
-  unit = at! "unit" PriceUnit.decoder
-  PriceRecord priceValue currency unit
-
--- Request/Response types
-unique type RecordPriceRequest = {
-  product : ProductIdentifier,
-  storeId : Nat,
-  priceRecord : PriceRecord
-}
-
-RecordPriceRequest.decoder : '{Decoder} RecordPriceRequest
-RecordPriceRequest.decoder = do
-  use Decoder.object at!
-  product = at! "product" ProductIdentifier.decoder
-  storeIdText = at! "storeId" Decoder.text
-  storeId = match Nat.fromText storeIdText with
-    Some n -> n
-    None -> Decoder.fail ("Invalid storeId, expected number: " Text.++ storeIdText)
-  priceRecord = at! "price" PriceRecord.decoder
-  RecordPriceRequest product storeId priceRecord
-
--- ============================================================
--- Storage Ability
--- ============================================================
-
-structural ability PriceStorage where
-  recordPrice : ProductIdentifier -> StoreId -> PriceRecord ->{PriceStorage} ()
-  getLatestPrice : ProductIdentifier -> StoreId ->{PriceStorage} Optional (Instant, PriceRecord)
-  getPriceHistory : ProductIdentifier -> StoreId ->{PriceStorage} [(Instant, PriceRecord)]
-  getPricesAcrossStores : ProductIdentifier ->{PriceStorage} [(StoreId, Instant, PriceRecord)]
-  getLatestPricesAtStore : StoreId ->{PriceStorage} [(ProductIdentifier, Instant, PriceRecord)]
-
--- ============================================================
--- Handler Implementation with Dual Index
--- ============================================================
-
-PriceStorage.run : Database -> '{g, PriceStorage} a ->{g, Remote} a
-PriceStorage.run db computation =
-  productIndex = OrderedTable.named db "prices_by_product" Universal.ordering
-  storeIndex = OrderedTable.named db "prices_by_store" Universal.ordering
-
-  go : Request {PriceStorage} a ->{g, Remote} a
-  go = cases
-    { a } -> a
-
-    { PriceStorage.recordPrice productId storeId record -> resume } ->
-      now = Remote.now ()
-      primaryKey = (productId, storeId, now)
-      secondaryKey = (storeId, productId, now)
-      OrderedTable.write productIndex primaryKey record
-      OrderedTable.write storeIndex secondaryKey record
-      handle resume () with go
-
-    { PriceStorage.getLatestPrice productId storeId -> resume } ->
-      startKey = (productId, storeId, Instant.epoch)
-      endKey = (productId, storeId, farFuture)
-      entries = Stream.toList (OrderedTable.rangeClosed productIndex startKey endKey)
-      result = match List.last entries with
-        None -> None
-        Some ((_, _, instant), record) -> Some (instant, record)
-      handle resume result with go
-
-    { PriceStorage.getPriceHistory productId storeId -> resume } ->
-      startKey = (productId, storeId, Instant.epoch)
-      endKey = (productId, storeId, farFuture)
-      entries = Stream.toList (OrderedTable.rangeClosed productIndex startKey endKey)
-      extractEntry = cases ((_, _, instant), record) -> (instant, record)
-      history = List.reverse (List.map extractEntry entries)
-      handle resume history with go
-
-    { PriceStorage.getPricesAcrossStores productId -> resume } ->
-      startKey = (productId, StoreId 0, Instant.epoch)
-      endKey = (productId, StoreId Nat.maxNat, farFuture)
-      allEntries = Stream.toList (OrderedTable.rangeClosed productIndex startKey endKey)
-      latestByStore = groupLatestByStore allEntries
-      handle resume latestByStore with go
-
-    { PriceStorage.getLatestPricesAtStore storeId -> resume } ->
-      startKey = (storeId, UniversalBarcode "", Instant.epoch)
-      endKey = (storeId, UniversalBarcode "~", farFuture)
-      allEntries = Stream.toList (OrderedTable.rangeClosed storeIndex startKey endKey)
-      latestByProduct = groupLatestByProduct allEntries
-      handle resume latestByProduct with go
-
-  handle computation() with go
-
--- ============================================================
--- Helper Functions
--- ============================================================
-
-groupLatestByStore : [((ProductIdentifier, StoreId, Instant), PriceRecord)] -> [(StoreId, Instant, PriceRecord)]
-groupLatestByStore entries =
-  go acc rem = match rem with
-    [] ->
-      Map.toList acc
-        |> List.map (cases (storeId, (instant, record)) -> (storeId, instant, record))
-    ((_, storeId, instant), record) +: rest ->
-      updated = match Map.get storeId acc with
-        None -> Map.insert storeId (instant, record) acc
-        Some (existingInstant, _) ->
-          if instant Instant.> existingInstant
-          then Map.insert storeId (instant, record) acc
-          else acc
-      go updated rest
-  go Map.empty entries
-
-groupLatestByProduct : [((StoreId, ProductIdentifier, Instant), PriceRecord)] -> [(ProductIdentifier, Instant, PriceRecord)]
-groupLatestByProduct entries =
-  go acc rem = match rem with
-    [] ->
-      Map.toList acc
-        |> List.map (cases (productId, (instant, record)) -> (productId, instant, record))
-    ((_, productId, instant), record) +: rest ->
-      updated = match Map.get productId acc with
-        None -> Map.insert productId (instant, record) acc
-        Some (existingInstant, _) ->
-          if instant Instant.> existingInstant
-          then Map.insert productId (instant, record) acc
-          else acc
-      go updated rest
-  go Map.empty entries
-
--- ============================================================
--- HTTP Routes
--- ============================================================
-
-prices.routes : '{Route, Exception, PriceStorage, Log} ()
-prices.routes =
-  use Parser /
-  use Text ++
-  use Route <|>
-
-  health = do
-    noCapture GET (s "health")
-    ok.text "ok"
-
-  -- POST /prices - Record a new price
   createPrice = do
     noCapture POST (s "prices")
     request = decodeJson RecordPriceRequest.decoder
-    info "Recording price" [("storeId", Nat.toText (RecordPriceRequest.storeId request))]
-    PriceStorage.recordPrice
+    info "Recording price" [("storeId", Nat.toText (RecordPriceRequest.storeId request)), ("recordedAt", Instant.toText (RecordPriceRequest.recordedAt request))]
+    recordPrice
       (RecordPriceRequest.product request)
       (StoreId (RecordPriceRequest.storeId request))
+      (RecordPriceRequest.recordedAt request)
       (RecordPriceRequest.priceRecord request)
     setStatus (Status 201 "Created")
-    ok.json (Json.object [("status", Json.text "created")])
-
-  -- GET /prices/barcode/<code>?storeId=X - Get latest price for barcode
+    ok.json (object [("status", Json.text "created")])
   getLatestPriceBarcode = do
     code = route GET (s "prices" / s "barcode" / Parser.text)
-    storeIds = Route.request.queryParameter "storeId"
-    match List.head storeIds with
+    storeIds = queryParameter "storeId"
+    match head storeIds with
       None -> badRequest.text "Missing storeId query parameter"
       Some storeIdText ->
-        match Nat.fromText storeIdText with
+        match parseStoreId storeIdText with
           None -> badRequest.text "Invalid storeId, expected number"
           Some storeId ->
-            match PriceStorage.getLatestPrice (UniversalBarcode code) (StoreId storeId) with
+            match getLatestPrice (UniversalBarcode code) storeId with
               None -> notFound.text "Price not found"
               Some (instant, record) ->
-                json = Json.object [("recordedAt", Json.text (Instant.toText instant)), ("price", PriceRecord.toJson record)]
+                json = object [("recordedAt", Json.text (Instant.toText instant)), ("price", PriceRecord.toJson record)]
                 ok.json json
-
-  -- GET /prices/barcode/<code>/history?storeId=X - Get price history
   getPriceHistoryBarcode = do
     code = route GET (s "prices" / s "barcode" / Parser.text / s "history")
-    storeIds = Route.request.queryParameter "storeId"
-    match List.head storeIds with
+    storeIds = queryParameter "storeId"
+    match head storeIds with
       None -> badRequest.text "Missing storeId query parameter"
       Some storeIdText ->
-        match Nat.fromText storeIdText with
+        match parseStoreId storeIdText with
           None -> badRequest.text "Invalid storeId, expected number"
           Some storeId ->
-            history = PriceStorage.getPriceHistory (UniversalBarcode code) (StoreId storeId)
-            entryToJson entry = match entry with (instant, record) -> Json.object [("recordedAt", Json.text (Instant.toText instant)), ("price", PriceRecord.toJson record)]
-            ok.json (Json.array (List.map entryToJson history))
-
-  -- GET /prices/barcode/<code>/compare - Compare across stores
+            history = getPriceHistory (UniversalBarcode code) storeId
+            entryToJson = cases (instant, record) -> object [("recordedAt", Json.text (Instant.toText instant)), ("price", PriceRecord.toJson record)]
+            ok.json (array (map entryToJson history))
   comparePricesBarcode = do
     code = route GET (s "prices" / s "barcode" / Parser.text / s "compare")
-    prices = PriceStorage.getPricesAcrossStores (UniversalBarcode code)
-    entryToJson entry = match entry with (StoreId sid, instant, record) -> Json.object [("storeId", Json.text (Nat.toText sid)), ("recordedAt", Json.text (Instant.toText instant)), ("price", PriceRecord.toJson record)]
-    ok.json (Json.array (List.map entryToJson prices))
-
-  -- GET /stores/<storeId>/prices - Get all prices at a store
+    prices = getPricesAcrossStores (UniversalBarcode code)
+    entryToJson = cases (StoreId sid, instant, record) -> object [("storeId", Json.text (Nat.toText sid)), ("recordedAt", Json.text (Instant.toText instant)), ("price", PriceRecord.toJson record)]
+    ok.json (array (map entryToJson prices))
   getStorePricesRoute = do
     storeIdText = route GET (s "stores" / Parser.text / s "prices")
-    match Nat.fromText storeIdText with
+    match parseStoreId storeIdText with
       None -> badRequest.text "Invalid storeId, expected number"
       Some storeId ->
-        prices = PriceStorage.getLatestPricesAtStore (StoreId storeId)
-        entryToJson entry = match entry with (productId, instant, record) -> Json.object [("product", ProductIdentifier.toJson productId), ("recordedAt", Json.text (Instant.toText instant)), ("price", PriceRecord.toJson record)]
-        ok.json (Json.array (List.map entryToJson prices))
-
+        prices = getLatestPricesAtStore storeId
+        entryToJson = cases (productId, instant, record) -> object [("product", ProductIdentifier.toJson productId), ("recordedAt", Json.text (Instant.toText instant)), ("price", PriceRecord.toJson record)]
+        ok.json (array (map entryToJson prices))
   health <|> createPrice <|> getLatestPriceBarcode <|> getPriceHistoryBarcode <|> comparePricesBarcode <|> getStorePricesRoute
 
--- ============================================================
--- Main Entry Points
--- ============================================================
-
+-- Main entry point (unchanged signature but uses updated ability)
 prices.main : Database -> HttpRequest ->{Exception, Storage, Remote, Log} HttpResponse
 prices.main db req = PriceStorage.run db do Route.run prices.routes req
-
--- Add CORS headers
-addCorsHeaders : HttpResponse -> HttpResponse
-addCorsHeaders response =
-  response
-    |> HttpResponse.addHeader "Access-Control-Allow-Origin" "*"
-    |> HttpResponse.addHeader "Access-Control-Allow-Methods" "GET, POST, PUT, DELETE, OPTIONS"
-    |> HttpResponse.addHeader "Access-Control-Allow-Headers" "Content-Type, Authorization"
-
-isOptionsMethod : HttpRequest -> Boolean
-isOptionsMethod req =
-  match HttpRequest.method req with
-    OPTIONS -> true
-    _ -> false
-
-prices.mainWithCors : Database -> HttpRequest ->{Exception, Storage, Remote, Log} HttpResponse
-prices.mainWithCors db req =
-  if isOptionsMethod req then
-    addCorsHeaders (HttpResponse.ok Body.empty)
-  else addCorsHeaders (prices.main db req)
-
--- Local deployment
-prices.deployLocal : '{IO, Exception} URI
-prices.deployLocal = main.local.serve do
-  env = Environment.default()
-  db = Database.named "prices-db"
-  Database.assign db env
-  hash = deployHttp env (prices.mainWithCors db)
-  name = ServiceName.named "prices-api"
-  ServiceName.assign name hash
-
--- Cloud deployment
-prices.deployCloud : '{IO, Exception} ServiceHash HttpRequest HttpResponse
-prices.deployCloud = Cloud.main do
-  env = Environment.default()
-  db = Database.named "prices-db"
-  Database.assign db env
-  hash = deployHttp env (prices.mainWithCors db)
-  name = ServiceName.named "prices-api"
-  _ = ServiceName.assign name hash
-  hash
-

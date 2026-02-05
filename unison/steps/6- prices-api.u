@@ -136,7 +136,7 @@ prices.routes =
         prices = getLatestPricesAtStore storeId
         entryToJson = cases (productId, instant, record) -> object [("product", ProductIdentifier.toJson productId), ("recordedAt", Json.text (Instant.toText instant)), ("price", PriceRecord.toJson record)]
         ok.json (array (map entryToJson prices))
-  health <|> createPrice <|> getLatestPriceBarcode <|> getPriceHistoryBarcode <|> comparePricesBarcode <|> getStorePricesRoute
+  health <|> createPrice <|> getPriceHistoryBarcode <|> comparePricesBarcode <|> getLatestPriceBarcode <|> getStorePricesRoute
 
 -- Main entry point (unchanged signature but uses updated ability)
 prices.main : Database -> HttpRequest ->{Exception, Storage, Remote, Log} HttpResponse

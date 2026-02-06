@@ -347,12 +347,57 @@ curl https://thomasalexandre.unison-services.cloud/s/prices-api/stores/4933/pric
 ]
 ```
 
+### Stores API
+
+**Base URL:** `https://thomasalexandre.unison-services.cloud/s/stores-api`
+
+#### Data Model
+
+**Store**:
+```json
+{
+  "id": 1,
+  "key": "SE559175008701",
+  "name": "ICA Supermarket Brommaplan",
+  "lon": 17.9389058,
+  "lat": 59.3384163,
+  "address": "Tunnlandet 1-3",
+  "postalCode": "16836",
+  "city": "Bromma",
+  "imageUrl": "https://mpk-app.s3.eu-north-1.amazonaws.com/store-logos/ica_supermarket.png"
+}
+```
+
+#### Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/health` | Health check |
+| GET | `/stores` | Get all stores |
+| GET | `/stores/:id` | Get store by ID |
+| GET | `/stores/key/:key` | Get store by key (org number) |
+| POST | `/stores` | Create a new store |
+| PUT | `/stores/:id` | Update a store |
+| DELETE | `/stores/:id` | Delete a store |
+
+#### Example Requests
+
+```bash
+# Get all stores
+curl https://thomasalexandre.unison-services.cloud/s/stores-api/stores
+
+# Get store by ID
+curl https://thomasalexandre.unison-services.cloud/s/stores-api/stores/1
+
+# Get store by key (org number) - useful for receipt parsing
+curl https://thomasalexandre.unison-services.cloud/s/stores-api/stores/key/SE559175008701
+```
+
 ### Other APIs
 
 | API | Base URL | Description |
 |-----|----------|-------------|
 | Products | `/s/products-api` | CRUD for products (from Open Food Facts) |
-| Stores | `/s/stores-api` | CRUD for store locations |
 
 ## Quick Example
 

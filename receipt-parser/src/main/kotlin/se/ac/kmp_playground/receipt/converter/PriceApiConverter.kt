@@ -1,22 +1,33 @@
 package se.ac.kmp_playground.receipt.converter
 
+import io.ktor.client.*
+import io.ktor.client.call.*
+import io.ktor.client.engine.cio.*
+import io.ktor.client.plugins.contentnegotiation.*
+import io.ktor.client.request.*
+import io.ktor.http.*
+import io.ktor.serialization.kotlinx.json.*
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
 import se.ac.kmp_playground.receipt.model.*
 
 /**
  * Converts parsed receipts into price-api request format
  */
 class PriceApiConverter(
-    private val storeIdMapping: Map<String, String> = DEFAULT_STORE_MAPPING
+    private val storesApiUrl: String = DEFAULT_STORES_API_URL
 ) {
+    private val client = HttpClient(CIO) {
+        install(ContentNegotiation) {
+            json(Json { ignoreUnknownKeys = true })
+        }
+    }
+
+    // Cache for store lookups by key
+    private val storeCache = mutableMapOf<String, Store?>()
 
     companion object {
-        // Mapping from store names/org numbers to store IDs in your system
-        val DEFAULT_STORE_MAPPING = mapOf(
-            "SE559175008701" to "1",      // ICA Supermarket Brommaplan
-            "ICA Supermarket Brommaplan" to "1",
-            "SE556182563001" to "2",      // Maxi ICA Stormarknad Bromma
-            "Maxi ICA Stormarknad Bromma" to "2",
-        )
+        const val DEFAULT_STORES_API_URL = "https://thomasalexandre.unison-services.cloud/s/stores-api"
 
         // Minimum length for EAN/UPC barcodes (shorter codes are store-specific)
         private const val MIN_BARCODE_LENGTH = 8
@@ -43,23 +54,46 @@ class PriceApiConverter(
     }
 
     /**
-     * Resolve store ID from receipt metadata
+     * Resolve store ID from receipt metadata by querying the stores-api
      */
     private fun resolveStoreId(receipt: ParsedReceipt): String {
-        // Try org number first
-        storeIdMapping[receipt.orgNumber]?.let { return it }
+        // Try org number first (this is the store key in the backend)
+        val store = getStoreByKey(receipt.orgNumber)
+        if (store != null) {
+            return store.id.toString()
+        }
 
-        // Try store name
-        storeIdMapping[receipt.storeName]?.let { return it }
-
-        // Try partial match on store name
-        storeIdMapping.entries.find { (key, _) ->
-            receipt.storeName.contains(key, ignoreCase = true) ||
-                    key.contains(receipt.storeName, ignoreCase = true)
-        }?.let { return it.value }
-
-        // Fallback: generate from org number
+        // Fallback: generate from org number digits
         return receipt.orgNumber.filter { it.isDigit() }.takeLast(6).ifEmpty { "0" }
+    }
+
+    /**
+     * Query the stores-api to get store by key
+     */
+    private fun getStoreByKey(key: String): Store? {
+        // Check cache first
+        if (storeCache.containsKey(key)) {
+            return storeCache[key]
+        }
+
+        // Query the API
+        val store = runBlocking {
+            try {
+                val response = client.get("$storesApiUrl/stores/key/$key")
+                if (response.status == HttpStatusCode.OK) {
+                    response.body<Store>()
+                } else {
+                    null
+                }
+            } catch (e: Exception) {
+                System.err.println("Warning: Failed to query stores-api for key $key: ${e.message}")
+                null
+            }
+        }
+
+        // Cache the result (including null for not found)
+        storeCache[key] = store
+        return store
     }
 
     /**
@@ -124,13 +158,20 @@ class PriceApiConverter(
             else -> "per_item"
         }
     }
+
+    /**
+     * Close the HTTP client
+     */
+    fun close() {
+        client.close()
+    }
 }
 
 /**
  * Extension function to convert receipts easily
  */
 fun ParsedReceipt.toPriceApiRequests(
-    storeIdMapping: Map<String, String> = PriceApiConverter.DEFAULT_STORE_MAPPING
+    storesApiUrl: String = PriceApiConverter.DEFAULT_STORES_API_URL
 ): List<PriceApiRequest> {
-    return PriceApiConverter(storeIdMapping).convert(this)
+    return PriceApiConverter(storesApiUrl).convert(this)
 }

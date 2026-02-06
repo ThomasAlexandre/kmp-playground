@@ -8,6 +8,7 @@ A Kotlin JVM CLI tool for parsing Swedish grocery store receipts (PDF) and uploa
 - Extracts product names, article numbers, prices, quantities, and units
 - Converts parsed data to price-api format for upload
 - Supports both weight-based (kg) and count-based (st) items
+- **Dynamically resolves store IDs** by querying the stores-api using the receipt's org number
 
 ## Building
 
@@ -61,9 +62,9 @@ A Kotlin JVM CLI tool for parsing Swedish grocery store receipts (PDF) and uploa
 
 ```json
 {
-    "storeName": "ICA Supermarket Brommaplan",
+    "storeName": "Supermarket xxxx",
     "storeAddress": "...",
-    "orgNumber": "SE559175008701",
+    "orgNumber": "SE55xxxxxxxxxx",
     "date": "2026-02-02T11:43:00Z",
     "receiptNumber": "7588",
     "items": [
@@ -102,12 +103,23 @@ A Kotlin JVM CLI tool for parsing Swedish grocery store receipts (PDF) and uploa
 ]
 ```
 
-## Supported Stores
+## Store Resolution
 
-| Store Name | Store ID |
-|------------|----------|
-| ICA Supermarket Brommaplan | 1 |
-| Maxi ICA Stormarknad Bromma | 2 |
+Store IDs are resolved dynamically by querying the stores-api using the receipt's organization number (org number).
+The stores-api endpoint `GET /stores/key/{orgNumber}` is used to look up the store.
+
+Use the `list-stores` command to see all available stores:
+
+```bash
+./gradlew :receipt-parser:run --args="list-stores"
+```
+
+Example output:
+```
+Known stores:
+  SE55xxxxxxxxx1 -> Store ID: 1 (ICA ...)
+  SE55xxxxxxxxx2 -> Store ID: 2 (Maxi ICA ...)
+```
 
 ## Dependencies
 

@@ -54,3 +54,19 @@ data class PriceRecord(
     val currency: String,
     val unit: String            // "per_item", "per_kg", "per_100g", "per_liter"
 )
+
+/**
+ * Store information from stores-api
+ */
+@Serializable
+data class Store(
+    val id: Int,
+    val key: String,
+    val name: String,
+    val lon: Double,
+    val lat: Double,
+    val address: String,
+    val postalCode: String,
+    val city: String,
+    val imageUrl: String
+)

@@ -10,6 +10,7 @@ import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.types.file
 import io.ktor.client.*
+import io.ktor.client.call.*
 import io.ktor.client.engine.cio.*
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.request.*
@@ -173,10 +174,32 @@ class UploadCommand : CliktCommand(name = "upload") {
 }
 
 class ListStoresCommand : CliktCommand(name = "list-stores") {
-    override fun run() {
-        echo("Known store mappings:")
-        se.ac.kmp_playground.receipt.converter.PriceApiConverter.DEFAULT_STORE_MAPPING.forEach { (key, value) ->
-            echo("  $key -> Store ID: $value")
+    private val apiUrl by option("--api-url")
+        .default("https://thomasalexandre.unison-services.cloud/s/stores-api")
+
+    override fun run() = runBlocking {
+        val client = HttpClient(CIO) {
+            install(ContentNegotiation) {
+                json(Json { ignoreUnknownKeys = true })
+            }
+        }
+
+        echo("Fetching stores from $apiUrl...")
+        try {
+            val response = client.get("$apiUrl/stores")
+            if (response.status.isSuccess()) {
+                val stores = response.body<List<se.ac.kmp_playground.receipt.model.Store>>()
+                echo("Known stores:")
+                stores.forEach { store ->
+                    echo("  ${store.key} -> Store ID: ${store.id} (${store.name})")
+                }
+            } else {
+                echo("Failed to fetch stores: ${response.status}", err = true)
+            }
+        } catch (e: Exception) {
+            echo("Error fetching stores: ${e.message}", err = true)
+        } finally {
+            client.close()
         }
     }
 }

@@ -18,3 +18,5 @@ captures
 **/xcshareddata/WorkspaceSettings.xcsettings
 node_modules/
 **/receipts/
+**/composeApp/src/webMain/resources/converted/
+**/unison/scripts/products/

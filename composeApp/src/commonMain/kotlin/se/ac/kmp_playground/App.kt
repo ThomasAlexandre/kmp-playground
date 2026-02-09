@@ -39,6 +39,9 @@ import se.ac.kmp_playground.data.EnrichedShoppingList
 import se.ac.kmp_playground.data.EnrichedShoppingItem
 import se.ac.kmp_playground.data.User
 import se.ac.kmp_playground.data.UserRepository
+import se.ac.kmp_playground.data.PriceRepository
+import se.ac.kmp_playground.data.StorePriceComparison
+import se.ac.kmp_playground.data.ProductPriceComparison
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
@@ -838,14 +841,116 @@ fun SearchTab(repository: ProductRepository = remember { ProductRepository() }) 
     }
 }
 
+// UI State for price comparison
+sealed class PriceComparisonUiState {
+    data object Idle : PriceComparisonUiState()
+    data object Loading : PriceComparisonUiState()
+    data class Success(
+        val itemComparisons: List<ProductPriceComparison>,
+        val storeTotals: List<Pair<Store, Double>>
+    ) : PriceComparisonUiState()
+    data class Error(val message: String) : PriceComparisonUiState()
+}
+
 @Composable
-fun HomeTab(selectedSupermarkets: Set<String>) {
-    val supermarketTotals = remember(selectedSupermarkets) {
-        selectedSupermarkets.associateWith { supermarket ->
-            shoppingListItems.sumOf { item ->
-                productPrices[item]?.get(supermarket) ?: 0.0
+fun HomeTab(
+    selectedSupermarkets: Set<String>,
+    userRepository: UserRepository = remember { UserRepository() },
+    storeRepository: StoreRepository = remember { StoreRepository() },
+    shoppingListRepository: ShoppingListRepository = remember { ShoppingListRepository() },
+    priceRepository: PriceRepository = remember { PriceRepository() },
+    currentUserId: String = "usr_a1b2c3d4"
+) {
+    var user by remember { mutableStateOf<User?>(null) }
+    var stores by remember { mutableStateOf<List<Store>>(emptyList()) }
+    var shoppingLists by remember { mutableStateOf<List<ShoppingList>>(emptyList()) }
+    var selectedListId by remember { mutableStateOf<String?>(null) }
+    var priceComparisonState by remember { mutableStateOf<PriceComparisonUiState>(PriceComparisonUiState.Idle) }
+    var isDropdownExpanded by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    // Load user and stores on mount
+    LaunchedEffect(Unit) {
+        // Load user
+        userRepository.getUserById(currentUserId).onSuccess { loadedUser ->
+            user = loadedUser
+        }
+        // Load stores
+        storeRepository.getAllStores().onSuccess { loadedStores ->
+            stores = loadedStores
+        }
+    }
+
+    // Load shopping lists when user is loaded
+    LaunchedEffect(user) {
+        user?.let { u ->
+            if (u.shoppingListIds.isNotEmpty()) {
+                shoppingListRepository.getShoppingListsByIds(u.shoppingListIds).onSuccess { lists ->
+                    shoppingLists = lists
+                    // Auto-select first list if none selected
+                    if (selectedListId == null && lists.isNotEmpty()) {
+                        selectedListId = lists.first().id
+                    }
+                }
             }
-        }.toList().sortedBy { it.second }
+        }
+    }
+
+    // Load price comparison when a list is selected
+    LaunchedEffect(selectedListId, user) {
+        val listId = selectedListId ?: return@LaunchedEffect
+        val currentUser = user ?: return@LaunchedEffect
+
+        if (currentUser.selectedStores.isEmpty()) {
+            priceComparisonState = PriceComparisonUiState.Idle
+            return@LaunchedEffect
+        }
+
+        priceComparisonState = PriceComparisonUiState.Loading
+
+        // Get enriched shopping list to get product barcodes and names
+        shoppingListRepository.getEnrichedShoppingList(listId).fold(
+            onSuccess = { enrichedList ->
+                // Extract barcodes from productCode field, filtering out nulls
+                val itemsWithCodes = enrichedList.items.filter { it.productCode != null }
+                val barcodes = itemsWithCodes.mapNotNull { it.productCode }
+                val productNames = itemsWithCodes.associate { (it.productCode ?: "") to it.name }
+
+                // Fetch price comparisons for all items
+                val priceComparisons = priceRepository.comparePricesForBarcodes(barcodes)
+
+                // Build product price comparisons
+                val itemComparisons = barcodes.mapNotNull { barcode ->
+                    val storePrices = priceComparisons[barcode] ?: emptyList()
+                    if (storePrices.isNotEmpty()) {
+                        ProductPriceComparison(
+                            barcode = barcode,
+                            productName = productNames[barcode] ?: barcode,
+                            storePrices = storePrices
+                        )
+                    } else null
+                }
+
+                // Calculate store totals for selected stores only
+                val selectedStoreIds = currentUser.selectedStores.map { it.storeId }.toSet()
+                val storeTotals = priceRepository.calculateStoreTotals(itemComparisons, selectedStoreIds)
+
+                // Map store IDs to Store objects and sort by total
+                val storeTotalsWithNames = storeTotals.mapNotNull { (storeId, total) ->
+                    stores.find { it.id == storeId }?.let { store ->
+                        store to total
+                    }
+                }.sortedBy { it.second }
+
+                priceComparisonState = PriceComparisonUiState.Success(
+                    itemComparisons = itemComparisons,
+                    storeTotals = storeTotalsWithNames
+                )
+            },
+            onFailure = { error ->
+                priceComparisonState = PriceComparisonUiState.Error(error.message ?: "Failed to load prices")
+            }
+        )
     }
 
     Column(
@@ -858,14 +963,62 @@ fun HomeTab(selectedSupermarkets: Set<String>) {
             style = MaterialTheme.typography.titleLarge
         )
 
-        Text(
-            text = "Total cost for ${shoppingListItems.size} items",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(vertical = 8.dp)
-        )
+        // Shopping list selector
+        if (shoppingLists.isNotEmpty()) {
+            val selectedList = shoppingLists.find { it.id == selectedListId }
 
-        if (selectedSupermarkets.isEmpty()) {
+            Box(modifier = Modifier.padding(vertical = 8.dp)) {
+                OutlinedCard(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { isDropdownExpanded = true }
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(
+                                text = "Shopping List",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = selectedList?.name ?: "Select a list",
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                        }
+                        Text(
+                            text = "▼",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                }
+
+                DropdownMenu(
+                    expanded = isDropdownExpanded,
+                    onDismissRequest = { isDropdownExpanded = false }
+                ) {
+                    shoppingLists.forEach { list ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = "${list.name} (${list.items.size} items)",
+                                    fontWeight = if (list.id == selectedListId) FontWeight.Bold else FontWeight.Normal
+                                )
+                            },
+                            onClick = {
+                                selectedListId = list.id
+                                isDropdownExpanded = false
+                            }
+                        )
+                    }
+                }
+            }
+        } else if (user != null) {
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -875,57 +1028,227 @@ fun HomeTab(selectedSupermarkets: Set<String>) {
                 )
             ) {
                 Text(
-                    text = "Select supermarkets in the Profile tab to see price comparisons",
+                    text = "No shopping lists found. Create one in the Profile tab.",
                     modifier = Modifier.padding(16.dp),
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
-        } else {
-            LazyColumn(
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(supermarketTotals) { (supermarket, total) ->
-                    val isCheapest = supermarketTotals.firstOrNull()?.first == supermarket
+        }
 
+        // Show selected stores info
+        user?.let { u ->
+            if (u.selectedStores.isEmpty()) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant
+                    )
+                ) {
+                    Text(
+                        text = "Select supermarkets in the Profile tab to see price comparisons",
+                        modifier = Modifier.padding(16.dp),
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            } else {
+                Text(
+                    text = "Comparing prices across ${u.selectedStores.size} stores",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 4.dp)
+                )
+            }
+        }
+
+        // Price comparison results
+        when (val state = priceComparisonState) {
+            is PriceComparisonUiState.Idle -> {
+                // Nothing to show
+            }
+            is PriceComparisonUiState.Loading -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(32.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator()
+                }
+            }
+            is PriceComparisonUiState.Error -> {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer
+                    )
+                ) {
+                    Text(
+                        text = "Error: ${state.message}",
+                        modifier = Modifier.padding(16.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                }
+            }
+            is PriceComparisonUiState.Success -> {
+                if (state.storeTotals.isEmpty()) {
                     Card(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp),
                         colors = CardDefaults.cardColors(
-                            containerColor = if (isCheapest)
-                                MaterialTheme.colorScheme.primaryContainer
-                            else
-                                MaterialTheme.colorScheme.surface
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant
                         )
                     ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column {
-                                Text(
-                                    text = supermarket,
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = if (isCheapest) FontWeight.Bold else FontWeight.Normal
+                        Text(
+                            text = "No price data available for the items in this list",
+                            modifier = Modifier.padding(16.dp),
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                } else {
+                    Text(
+                        text = "Total cost for ${state.itemComparisons.size} items with price data",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 4.dp)
+                    )
+
+                    LazyColumn(
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.padding(top = 8.dp)
+                    ) {
+                        items(state.storeTotals) { (store, total) ->
+                            val isCheapest = state.storeTotals.firstOrNull()?.first?.id == store.id
+
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (isCheapest)
+                                        MaterialTheme.colorScheme.primaryContainer
+                                    else
+                                        MaterialTheme.colorScheme.surface
                                 )
-                                if (isCheapest) {
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = store.name,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = if (isCheapest) FontWeight.Bold else FontWeight.Normal
+                                        )
+                                        Text(
+                                            text = store.address,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        if (isCheapest) {
+                                            Text(
+                                                text = "Best price",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    }
                                     Text(
-                                        text = "Best price",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.primary
+                                        text = "${((total * 100).toLong() / 100.0)} SEK",
+                                        style = MaterialTheme.typography.titleLarge,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isCheapest)
+                                            MaterialTheme.colorScheme.primary
+                                        else
+                                            MaterialTheme.colorScheme.onSurface
                                     )
                                 }
                             }
-                            Text(
-                                text = "$${((total * 100).toInt() / 100.0)}",
-                                style = MaterialTheme.typography.titleLarge,
-                                fontWeight = FontWeight.Bold,
-                                color = if (isCheapest)
-                                    MaterialTheme.colorScheme.primary
-                                else
-                                    MaterialTheme.colorScheme.onSurface
-                            )
+                        }
+
+                        // Show item-level price breakdown
+                        if (state.itemComparisons.isNotEmpty()) {
+                            item {
+                                Text(
+                                    text = "Price Breakdown by Item",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)
+                                )
+                            }
+
+                            items(state.itemComparisons) { itemComparison ->
+                                Card(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = MaterialTheme.colorScheme.surface
+                                    )
+                                ) {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(12.dp)
+                                    ) {
+                                        Text(
+                                            text = itemComparison.productName,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(top = 4.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            itemComparison.storePrices
+                                                .filter { sp -> stores.any { it.id.toString() == sp.storeId } }
+                                                .sortedBy { it.price.price.toDoubleOrNull() ?: Double.MAX_VALUE }
+                                                .forEach { storePrice ->
+                                                    val storeName = stores.find { it.id.toString() == storePrice.storeId }?.name ?: storePrice.storeId
+                                                    val isLowestPrice = itemComparison.storePrices
+                                                        .filter { sp -> stores.any { it.id.toString() == sp.storeId } }
+                                                        .minByOrNull { it.price.price.toDoubleOrNull() ?: Double.MAX_VALUE }
+                                                        ?.storeId == storePrice.storeId
+
+                                                    Card(
+                                                        colors = CardDefaults.cardColors(
+                                                            containerColor = if (isLowestPrice)
+                                                                MaterialTheme.colorScheme.primaryContainer
+                                                            else
+                                                                MaterialTheme.colorScheme.surfaceVariant
+                                                        )
+                                                    ) {
+                                                        Column(
+                                                            modifier = Modifier.padding(8.dp),
+                                                            horizontalAlignment = Alignment.CenterHorizontally
+                                                        ) {
+                                                            Text(
+                                                                text = storeName.take(12),
+                                                                style = MaterialTheme.typography.labelSmall,
+                                                                maxLines = 1
+                                                            )
+                                                            Text(
+                                                                text = "${storePrice.price.price} ${storePrice.price.currency}",
+                                                                style = MaterialTheme.typography.bodySmall,
+                                                                fontWeight = if (isLowestPrice) FontWeight.Bold else FontWeight.Normal,
+                                                                color = if (isLowestPrice)
+                                                                    MaterialTheme.colorScheme.primary
+                                                                else
+                                                                    MaterialTheme.colorScheme.onSurface
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }

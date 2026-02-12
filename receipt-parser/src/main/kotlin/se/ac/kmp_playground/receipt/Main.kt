@@ -21,9 +21,58 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import se.ac.kmp_playground.receipt.converter.toPriceApiRequests
+import se.ac.kmp_playground.receipt.model.ParsedReceipt
 import se.ac.kmp_playground.receipt.model.PriceApiRequest
+import se.ac.kmp_playground.receipt.parser.HemkopReceiptParser
 import se.ac.kmp_playground.receipt.parser.TabulaReceiptParser
 import java.io.File
+
+/**
+ * Supported receipt parser types
+ */
+enum class ParserType {
+    ICA,
+    HEMKOP;
+
+    companion object {
+        fun fromString(value: String): ParserType = when (value.lowercase()) {
+            "ica", "tabula" -> ICA
+            "hemkop", "hemköp", "axfood" -> HEMKOP
+            else -> throw IllegalArgumentException("Unknown parser type: $value. Supported: ica, hemkop")
+        }
+    }
+}
+
+/**
+ * Interface for receipt parsers
+ */
+interface ReceiptParser {
+    fun parse(file: File): ParsedReceipt
+}
+
+/**
+ * Wrapper to make TabulaReceiptParser implement the interface
+ */
+class IcaReceiptParser : ReceiptParser {
+    private val parser = TabulaReceiptParser()
+    override fun parse(file: File): ParsedReceipt = parser.parse(file)
+}
+
+/**
+ * Wrapper to make HemkopReceiptParser implement the interface
+ */
+class HemkopReceiptParserWrapper : ReceiptParser {
+    private val parser = HemkopReceiptParser()
+    override fun parse(file: File): ParsedReceipt = parser.parse(file)
+}
+
+/**
+ * Factory to create the appropriate parser
+ */
+fun createParser(type: ParserType): ReceiptParser = when (type) {
+    ParserType.ICA -> IcaReceiptParser()
+    ParserType.HEMKOP -> HemkopReceiptParserWrapper()
+}
 
 val json = Json {
     prettyPrint = true
@@ -45,8 +94,12 @@ class ParseCommand : CliktCommand(name = "parse") {
     private val priceApiFormat by option("--price-api")
         .flag(default = false)
 
+    private val parserType by option("-p", "--parser", help = "Parser type: ica (default), hemkop")
+        .default("ica")
+
     override fun run() {
-        val parser = TabulaReceiptParser()
+        val parser = createParser(ParserType.fromString(parserType))
+        echo("Using parser: ${parserType.uppercase()}")
 
         outputDir?.mkdirs()
 
@@ -95,8 +148,12 @@ class UploadCommand : CliktCommand(name = "upload") {
 
     private val storeId by option("--store-id")
 
+    private val parserType by option("-p", "--parser", help = "Parser type: ica (default), hemkop")
+        .default("ica")
+
     override fun run() = runBlocking {
-        val parser = TabulaReceiptParser()
+        val parser = createParser(ParserType.fromString(parserType))
+        echo("Using parser: ${parserType.uppercase()}")
 
         val client = HttpClient(CIO) {
             install(ContentNegotiation) {

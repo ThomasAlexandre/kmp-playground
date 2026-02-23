@@ -1,3 +1,8 @@
+run portal.deployLocal
+update
+names href
+href
+projects
 update
 git status
 update

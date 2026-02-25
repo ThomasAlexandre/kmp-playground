@@ -20,3 +20,4 @@ node_modules/
 **/receipts/
 **/composeApp/src/webMain/resources/converted/
 **/unison/scripts/products/
+data/

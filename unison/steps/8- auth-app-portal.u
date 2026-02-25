@@ -1,0 +1,674 @@
+-- App Portal with Authentication
+-- Extends the app-portal with a proper Auth ability for login/register
+-- Uses session-based authentication with cookies and password hashing
+
+type portal.auth.UserId
+  = UserId Text
+
+type portal.auth.User
+  = { id : portal.auth.UserId,
+      email : Text,
+      hashedPassword : Text,
+      displayName : Text }
+
+type portal.auth.SessionId
+  = SessionId Text
+
+type portal.auth.Session
+  = { sessionId : portal.auth.SessionId,
+      userId : portal.auth.UserId,
+      expiresAt : Instant }
+
+ability portal.Auth where
+  upsertUser : portal.auth.User ->{portal.Auth} ()
+  getActiveSessionByToken :
+    Text -> Instant ->{portal.Auth} Optional portal.auth.Session
+  hashPassword : Text ->{portal.Auth} Text
+  createSession :
+    portal.auth.User -> Instant ->{portal.Auth} portal.auth.Session
+  getUserById : portal.auth.UserId ->{portal.Auth} Optional portal.auth.User
+  getUserByEmail : Text ->{portal.Auth} Optional portal.auth.User
+  isPasswordValid : portal.auth.User -> Text ->{portal.Auth} Boolean
+  deleteSession : portal.auth.SessionId ->{portal.Auth} ()
+
+type portal.Auth.LoginFailure
+  = UserNotFound
+  | InvalidPassword
+
+type portal.Auth.SignupFailure
+  = InvalidEmail
+  | UserAlreadyExists
+  | PasswordTooShort Text
+
+portal.auth.UserId.toText : portal.auth.UserId -> Text
+portal.auth.UserId.toText = cases portal.auth.UserId.UserId id -> id
+
+portal.auth.SessionId.toText : portal.auth.SessionId -> Text
+portal.auth.SessionId.toText = cases portal.auth.SessionId.SessionId id -> id
+
+portal.Auth.run :
+  Database -> '{g, portal.Auth} a ->{g, Exception, Remote, Random} a
+portal.Auth.run db p =
+  use Bytes toHex
+  use Instant + >
+  use Optional None
+  use OrderedTable named tryRead write
+  use Text ==
+  use Universal ordering
+  use portal auth.Session
+  use portal.auth User
+  users : OrderedTable Text User
+  users = named db "portal_auth_users" ordering
+  usersByEmail : OrderedTable Text User
+  usersByEmail = named db "portal_auth_users_by_email" ordering
+  sessions : OrderedTable Text auth.Session
+  sessions = named db "portal_auth_sessions" ordering
+  upsertUser' : User ->{g, Remote} ()
+  upsertUser' user =
+    userId = portal.auth.UserId.toText (portal.auth.User.id user)
+    write users userId user
+    email = portal.auth.User.email user
+    write usersByEmail email user
+  getUserById' : portal.auth.UserId ->{g, Remote} Optional User
+  getUserById' uid = tryRead users (portal.auth.UserId.toText uid)
+  getUserByEmail' : Text ->{g, Remote} Optional User
+  getUserByEmail' email = tryRead usersByEmail email
+  getSessionByToken' : Text ->{g, Remote} Optional auth.Session
+  getSessionByToken' token = tryRead sessions token
+  upsertSession : auth.Session ->{g, Remote} ()
+  upsertSession session =
+    sessionToken =
+      portal.auth.SessionId.toText (portal.auth.Session.sessionId session)
+    write sessions sessionToken session
+  deleteSession' : portal.auth.SessionId ->{g, Remote} ()
+  deleteSession' sid =
+    OrderedTable.delete sessions (portal.auth.SessionId.toText sid)
+  saltAndHashPassword : Text -> Text
+  saltAndHashPassword password =
+    use Text ++
+    salt = "portal-app-secure-salt-2026"
+    hashBytes Sha2_256 (Text.toUtf8 (salt ++ password)) |> toHex
+  go : Request {portal.Auth} a ->{g, Exception, Remote, Random} a
+  go = cases
+    { a } -> a
+    { portal.Auth.upsertUser user -> resume } ->
+      upsertUser' user
+      handle resume() with go
+    { portal.Auth.getUserById uid -> resume } ->
+      result = getUserById' uid
+      handle resume result with go
+    { portal.Auth.getUserByEmail email -> resume } ->
+      result = getUserByEmail' email
+      handle resume result with go
+    { portal.Auth.getActiveSessionByToken token now -> resume } ->
+      result = getSessionByToken' token
+      activeSession =
+        match result with
+          None -> None
+          Some session ->
+            if portal.auth.Session.expiresAt session > now then Some session
+            else None
+      handle resume activeSession with go
+    { portal.Auth.createSession user now -> resume } ->
+      sessionToken = toHex (Random.bytes 32)
+      expiresAt = now + days +30
+      session =
+        portal.auth.Session.Session
+          (portal.auth.SessionId.SessionId sessionToken)
+          (portal.auth.User.id user)
+          expiresAt
+      upsertSession session
+      handle resume session with go
+    { portal.Auth.deleteSession sid -> resume } ->
+      deleteSession' sid
+      handle resume() with go
+    { portal.Auth.isPasswordValid user password -> resume } ->
+      isValid =
+        portal.auth.User.hashedPassword user == saltAndHashPassword password
+      handle resume isValid with go
+    { portal.Auth.hashPassword rawPassword -> resume } ->
+      hashed = saltAndHashPassword rawPassword
+      handle resume hashed with go
+  handle p() with go
+
+portal.Auth.handleLogin :
+  Text
+  -> Text
+  -> Instant
+  ->{portal.Auth} Either portal.Auth.LoginFailure portal.auth.Session
+portal.Auth.handleLogin email password now =
+  user = portal.Auth.getUserByEmail email
+  match user with
+    Optional.None -> Left portal.Auth.LoginFailure.UserNotFound
+    Some u        ->
+      isValid = portal.Auth.isPasswordValid u password
+      if isValid then
+        session = portal.Auth.createSession u now
+        Right session
+      else Left portal.Auth.LoginFailure.InvalidPassword
+
+portal.Auth.handleSignup :
+  Text
+  -> Text
+  -> Text
+  -> Instant
+  ->{Random, portal.Auth} Either portal.Auth.SignupFailure portal.auth.Session
+portal.Auth.handleSignup displayName email password now =
+  use Nat <
+  existingUser = portal.Auth.getUserByEmail email
+  match existingUser with
+    Some _ -> Left portal.Auth.SignupFailure.UserAlreadyExists
+    Optional.None ->
+      if Boolean.not (Text.contains "@" email) then
+        Left portal.Auth.SignupFailure.InvalidEmail
+      else
+        if Text.size password < 8 then
+          Left
+            (portal.Auth.SignupFailure.PasswordTooShort
+              "Password must be at least 8 characters")
+        else
+          hashedPassword = portal.Auth.hashPassword password
+          userId = portal.auth.UserId.UserId (Bytes.toHex (Random.bytes 16))
+          newUser =
+            portal.auth.User.User userId email hashedPassword displayName
+          portal.Auth.upsertUser newUser
+          session = portal.Auth.createSession newUser now
+          Right session
+
+portal.Auth.getSessionFromCookie :
+  Instant ->{Route, portal.Auth} Optional portal.auth.Session
+portal.Auth.getSessionFromCookie now =
+  use Optional None
+  cookie = getCookie "portal_session"
+  match cookie with
+    None       -> None
+    Some token -> portal.Auth.getActiveSessionByToken token now
+
+portal.Auth.getCurrentUser :
+  Instant ->{Route, portal.Auth} Optional portal.auth.User
+portal.Auth.getCurrentUser now =
+  match portal.Auth.getSessionFromCookie now with
+    Optional.None -> Optional.None
+    Some session ->
+      portal.Auth.getUserById (portal.auth.Session.userId session)
+
+portal.Auth.setSessionCookie : portal.auth.Session ->{Route} ()
+portal.Auth.setSessionCookie session =
+  use Text ++
+  token = portal.auth.SessionId.toText (portal.auth.Session.sessionId session)
+  cookieValue =
+    "portal_session=" ++ token ++ "; Path=/; HttpOnly; SameSite=Lax"
+  headers.add "Set-Cookie" cookieValue
+
+portal.Auth.clearSessionCookie : '{Route} ()
+portal.Auth.clearSessionCookie = do
+  clearCookie = "portal_session=; Path=/; HttpOnly; Max-Age=0"
+  headers.add "Set-Cookie" clearCookie
+
+portal.basePath : Text
+portal.basePath = "/s/app-portal"
+
+portal.topBar3 : Optional portal.auth.User -> tapegram_html_2_0_0.Html
+portal.topBar3 maybeUser =
+  use Optional None
+  use Text ++
+  use tapegram_html_2_0_0 a div text span button
+  use tapegram_html_2_1_0.Attribute class href style
+  base = portal.basePath
+  div
+    [class "top-bar"]
+    [ tapegram_html_2_0_0.h1 [] [text "App Portal"]
+    , div [class "top-bar-buttons"] match maybeUser with
+        None ->
+          [ a [href (base ++ "/login"), class "btn btn-secondary"] [text "Login"]
+          , a [href (base ++ "/register"), class "btn btn-primary"] [text "Register"]
+          ]
+        Some user ->
+          [ span [] [text ("Hello, " ++ portal.auth.User.displayName user)]
+          , button
+              [ class "btn btn-secondary"
+              , hx_post (base ++ "/logout")
+              , tapegram_htmx_3_4_0.hx_swap tapegram_htmx_3_4_0.hx_swap.AdjacentHtml.InnerHtml None
+              , hx_target "body"
+              ]
+              [text "Logout"]
+          ]
+    ]
+
+portal.loginForm2 : Text -> Optional Text -> tapegram_html_2_0_0.Html
+portal.loginForm2 emailValue errorMsg =
+  use Optional None
+  use Text ++
+  use tapegram_html_2_0_0 div h2 form label input button p a text
+  use tapegram_html_2_1_0.Attribute class type_ name value placeholder required style
+  base = portal.basePath
+  div
+    [class "container"]
+    [ h2 [] [text "Login"]
+    , match errorMsg with
+        Some msg -> div [class "error-msg"] [text msg]
+        None -> text ""
+    , form
+        [ hx_post (base ++ "/login")
+        , tapegram_htmx_3_4_0.hx_swap tapegram_htmx_3_4_0.hx_swap.AdjacentHtml.OuterHtml None
+        ]
+        [ div [class "form-group"]
+            [ label [] [text "Email"]
+            , input [type_ "email", name "email", value emailValue, placeholder "you@example.com", required true]
+            ]
+        , div [class "form-group"]
+            [ label [] [text "Password"]
+            , input [type_ "password", name "password", placeholder "Your password", required true]
+            ]
+        , button [type_ "submit", class "btn btn-primary", style "width: 100%"] [text "Login"]
+        ]
+    , p [style "text-align: center; margin-top: 1rem"]
+        [ text "Don't have an account? "
+        , a [tapegram_html_2_1_0.Attribute.href (base ++ "/register"), style "color: #e94560"] [text "Register"]
+        ]
+    ]
+
+portal.registerForm2 : Text -> Optional Text -> tapegram_html_2_0_0.Html
+portal.registerForm2 displayNameValue errorMsg =
+  use Optional None
+  use Text ++
+  use tapegram_html_2_0_0 div h2 form label input button p a text
+  use tapegram_html_2_1_0.Attribute class type_ name value placeholder required style
+  base = portal.basePath
+  div
+    [class "container"]
+    [ h2 [] [text "Register"]
+    , match errorMsg with
+        Some msg -> div [class "error-msg"] [text msg]
+        None -> text ""
+    , form
+        [ hx_post (base ++ "/register")
+        , tapegram_htmx_3_4_0.hx_swap tapegram_htmx_3_4_0.hx_swap.AdjacentHtml.OuterHtml None
+        ]
+        [ div [class "form-group"]
+            [ label [] [text "Display Name"]
+            , input [type_ "text", name "displayName", value displayNameValue, placeholder "Your name", required true]
+            ]
+        , div [class "form-group"]
+            [ label [] [text "Email"]
+            , input [type_ "email", name "email", placeholder "you@example.com", required true]
+            ]
+        , div [class "form-group"]
+            [ label [] [text "Password"]
+            , input [type_ "password", name "password", placeholder "Choose a password", required true]
+            ]
+        , button [type_ "submit", class "btn btn-primary", style "width: 100%"] [text "Register"]
+        ]
+    , p [style "text-align: center; margin-top: 1rem"]
+        [ text "Already have an account? "
+        , a [tapegram_html_2_1_0.Attribute.href (base ++ "/login"), style "color: #e94560"] [text "Login"]
+        ]
+    ]
+
+portal.auth.redirectGet : Text ->{Route} ()
+portal.auth.redirectGet url =
+  use Text ++
+  fullUrl = portal.basePath ++ url
+  setStatus (Status 303 "See Other")
+  headers.add "Location" fullUrl
+  headers.add "HX-Redirect" fullUrl
+
+portal.auth.routes : '{Route, Exception, Remote, Random, Log, portal.Auth} ()
+portal.auth.routes =
+  use Optional None
+  use Parser s
+  use Route <|>
+  use ok html
+  use tapegram_html_2_0_0 toText
+  use Text ++
+  base = portal.basePath
+  getLogin = do
+    noCapture GET (s "login")
+    content = [portal.topBar3 None, portal.loginForm2 "" None]
+    html (portal.renderPage content)
+  postLogin =
+    do
+      noCapture POST (s "login")
+      formData = Route.request.getFormData()
+      email = portal.getFormValue "email" formData
+      password = portal.getFormValue "password" formData
+      now = Remote.now()
+      result = portal.Auth.handleLogin email password now
+      match result with
+        Left _ ->
+          html (toText (portal.loginForm2 email (Some "Invalid email or password")))
+        Right session ->
+          portal.Auth.setSessionCookie session
+          portal.auth.redirectGet "/"
+  getRegister = do
+    noCapture GET (s "register")
+    content = [portal.topBar3 None, portal.registerForm2 "" None]
+    html (portal.renderPage content)
+  postRegister =
+    do
+      noCapture POST (s "register")
+      formData = Route.request.getFormData()
+      displayName = portal.getFormValue "displayName" formData
+      email = portal.getFormValue "email" formData
+      password = portal.getFormValue "password" formData
+      now = Remote.now()
+      result = portal.Auth.handleSignup displayName email password now
+      match result with
+        Left failure ->
+          errorMsg =
+            match failure with
+              portal.Auth.SignupFailure.InvalidEmail ->
+                "Please enter a valid email address"
+              portal.Auth.SignupFailure.PasswordTooShort msg -> msg
+              portal.Auth.SignupFailure.UserAlreadyExists ->
+                "An account with this email already exists"
+          html (toText (portal.registerForm2 displayName (Some errorMsg)))
+        Right session ->
+          portal.Auth.setSessionCookie session
+          portal.auth.redirectGet "/"
+  postLogout =
+    do
+      noCapture POST (s "logout")
+      now = Remote.now()
+      match portal.Auth.getSessionFromCookie now with
+        Some session ->
+          portal.Auth.deleteSession (portal.auth.Session.sessionId session)
+        None -> ()
+      portal.Auth.clearSessionCookie()
+      headers.add "HX-Redirect" (base ++ "/")
+      html (toText (tapegram_html_2_0_0.text ""))
+  getLogin <|> postLogin <|> getRegister <|> postRegister <|> postLogout
+
+ability portal.AppTileStorage where
+  deleteTile : portal.AppTileId ->{portal.AppTileStorage} ()
+  getTile : portal.AppTileId ->{portal.AppTileStorage} Optional portal.AppTile
+  getTilesByUser :
+    portal.auth.UserId ->{portal.AppTileStorage} [portal.AppTile]
+  upsertTile : portal.AppTile ->{portal.AppTileStorage} ()
+
+portal.AppTileStorage.run :
+  Database -> '{g, portal.AppTileStorage} a ->{g, Remote} a
+portal.AppTileStorage.run db p =
+  use List :+
+  use Optional getOrElse
+  use OrderedTable named tryRead write
+  use Text !=
+  use Universal ordering
+  tileTable = named db "portal_tiles" ordering
+  userTilesIndex = named db "portal_tiles_by_user" ordering
+  go : Request {portal.AppTileStorage} a ->{g, Remote} a
+  go = cases
+    { a } -> a
+    { portal.AppTileStorage.getTile tid -> resume } ->
+      result = tryRead tileTable (portal.AppTileId.toText tid)
+      handle resume result with go
+    { portal.AppTileStorage.getTilesByUser uid -> resume } ->
+      uidText = portal.auth.UserId.toText uid
+      tileIds = getOrElse [] (tryRead userTilesIndex uidText)
+      tiles = List.filterMap (tid -> tryRead tileTable tid) tileIds
+      sorted = sortBy portal.AppTile.portalTileOrder tiles
+      handle resume sorted with go
+    { portal.AppTileStorage.upsertTile tile -> resume } ->
+      tid = portal.AppTileId.toText (portal.AppTile.portalTileId tile)
+      uidText =
+        portal.auth.UserId.toText (portal.AppTile.portalTileUserId tile)
+      write tileTable tid tile
+      existingIds = getOrElse [] (tryRead userTilesIndex uidText)
+      newIds =
+        if List.contains tid existingIds then existingIds
+        else existingIds :+ tid
+      write userTilesIndex uidText newIds
+      handle resume() with go
+    { portal.AppTileStorage.deleteTile tid -> resume } ->
+      tidText = portal.AppTileId.toText tid
+      maybeTile = tryRead tileTable tidText
+      match maybeTile with
+        Optional.None -> ()
+        Some tile ->
+          uidText =
+            portal.auth.UserId.toText (portal.AppTile.portalTileUserId tile)
+          existingIds = getOrElse [] (tryRead userTilesIndex uidText)
+          newIds = List.filter (i -> i != tidText) existingIds
+          write userTilesIndex uidText newIds
+      OrderedTable.delete tileTable tidText
+      handle resume() with go
+  handle p() with go
+
+type portal.AppTileId
+  = AppTileId Text
+
+type portal.AppTile
+  = { portalTileId : portal.AppTileId,
+      portalTileUserId : portal.auth.UserId,
+      portalTileName : Text,
+      portalTileImageUrl : Text,
+      portalTileUrl : Text,
+      portalTileOrder : Nat }
+
+portal.AppTileId.toText : portal.AppTileId -> Text
+portal.AppTileId.toText = cases portal.AppTileId.AppTileId id -> id
+
+portal.app.routes :
+  '{Route, Exception, portal.AppTileStorage, Remote, Random, Log, portal.Auth} ()
+portal.app.routes =
+  use Optional None
+  use Parser / s
+  use Route <|>
+  use portal.AppTileId AppTileId
+  use portal.AppTileStorage getTilesByUser
+  use tapegram_html_2_0_0 toText text
+  use Text ++
+  base = portal.basePath
+  emptyHtml = text ""
+  homepage =
+    do
+      noCapture GET (s "")
+      now = Remote.now()
+      maybeUser = portal.Auth.getCurrentUser now
+      tiles = match maybeUser with
+        None      -> []
+        Some user -> getTilesByUser (portal.auth.User.id user)
+      isLoggedIn = isSome maybeUser
+      topBarUser = Optional.map (u -> portal.auth.User.displayName u) maybeUser
+      content =
+        [ portal.topBar2 topBarUser
+        , if isLoggedIn then portal.appGrid2 tiles true
+          else tapegram_html_2_0_0.div [] portal.welcomeContent
+        ]
+      ok.html (portal.renderPage content)
+  addAppModal = do
+    noCapture GET (s "apps" / s "new")
+    now = Remote.now()
+    maybeUser = portal.Auth.getCurrentUser now
+    match maybeUser with
+      None   -> portal.auth.redirectGet "/login"
+      Some _ -> ok.html (toText portal.addAppModalHtml2)
+  createApp =
+    do
+      noCapture POST (s "apps")
+      now = Remote.now()
+      maybeUser = portal.Auth.getCurrentUser now
+      match maybeUser with
+        None -> portal.auth.redirectGet "/login"
+        Some user ->
+          formData = Route.request.getFormData()
+          appName = portal.getFormValue "name" formData
+          imgUrl = portal.getFormValue "imageUrl" formData
+          appUrl = portal.getFormValue "url" formData
+          existingTiles = getTilesByUser (portal.auth.User.id user)
+          nextOrder = List.size existingTiles
+          tileId = AppTileId (Bytes.toHex (Random.bytes 16))
+          tile =
+            portal.AppTile.AppTile
+              tileId (portal.auth.User.id user) appName imgUrl appUrl nextOrder
+          portal.AppTileStorage.upsertTile tile
+          headers.add "HX-Redirect" (base ++ "/")
+          ok.html (toText emptyHtml)
+  deleteApp =
+    do
+      use Text ==
+      appId = route DELETE (s "apps" / Parser.text)
+      now = Remote.now()
+      maybeUser = portal.Auth.getCurrentUser now
+      match maybeUser with
+        None -> portal.auth.redirectGet "/login"
+        Some user ->
+          maybeTile = portal.AppTileStorage.getTile (AppTileId appId)
+          match maybeTile with
+            None -> notFound.html "App not found"
+            Some tile ->
+              tileOwner =
+                portal.auth.UserId.toText
+                  (portal.AppTile.portalTileUserId tile)
+              usrId = portal.auth.UserId.toText (portal.auth.User.id user)
+              if tileOwner == usrId then
+                portal.AppTileStorage.deleteTile (AppTileId appId)
+                ok.html (toText emptyHtml)
+              else forbidden.text "Not authorized"
+  healthCheck = do
+    noCapture GET (s "health")
+    ok.json (Json.object [] |> addText "status" "ok")
+  homepage <|> addAppModal <|> createApp <|> deleteApp <|> healthCheck
+
+portal.topBar2 : Optional Text -> tapegram_html_2_0_0.Html
+portal.topBar2 maybeDisplayName =
+  use Optional None
+  use Text ++
+  use tapegram_html_2_0_0 a div text
+  use tapegram_html_2_1_0.Attribute class href
+  base = portal.basePath
+  div
+    [class "top-bar"]
+    [ tapegram_html_2_0_0.h1 [] [text "App Portal"]
+    , div [class "top-bar-buttons"] match maybeDisplayName with
+        None ->
+          [ a [href (base ++ "/login"), class "btn btn-secondary"] [text "Login"]
+          , a [href (base ++ "/register"), class "btn btn-primary"] [text "Register"]
+          ]
+        Some name ->
+          [ tapegram_html_2_0_0.span [] [text ("Hello, " ++ name)]
+          , tapegram_html_2_0_0.button
+              [ class "btn btn-secondary"
+              , hx_post (base ++ "/logout")
+              , tapegram_htmx_3_4_0.hx_swap
+                  tapegram_htmx_3_4_0.hx_swap.AdjacentHtml.InnerHtml None
+              , hx_target "body"
+              ]
+              [text "Logout"]
+          ]
+    ]
+
+portal.appTileComponent2 :
+  portal.AppTile -> Boolean -> tapegram_html_2_0_0.Html
+portal.appTileComponent2 tile canEdit =
+  use Text ++
+  use tapegram_html_2_0_0 div text
+  use tapegram_html_2_1_0.Attribute class
+  base = portal.basePath
+  tid = portal.AppTileId.toText (portal.AppTile.portalTileId tile)
+  imgElem =
+    tapegram_html_2_0_0.img
+      [ tapegram_html_2_1_0.Attribute.src
+          (portal.AppTile.portalTileImageUrl tile)
+      , tapegram_html_2_1_0.Attribute.alt (portal.AppTile.portalTileName tile)
+      ]
+  nameElem =
+    tapegram_html_2_0_0.span [] [text (portal.AppTile.portalTileName tile)]
+  tileContent =
+    tapegram_html_2_0_0.a
+      [ tapegram_html_2_1_0.Attribute.href (portal.AppTile.portalTileUrl tile)
+      , class "app-tile"
+      , tapegram_html_2_1_0.Attribute.target "_blank"
+      ]
+      [imgElem, nameElem]
+  deleteBtn =
+    tapegram_html_2_0_0.button
+      [ class "tile-delete"
+      , hx_delete (base ++ "/apps/" ++ tid)
+      , tapegram_htmx_3_4_0.hx_swap
+          tapegram_htmx_3_4_0.hx_swap.AdjacentHtml.OuterHtml Optional.None
+      , hx_target "closest .app-tile-wrapper"
+      , tapegram_htmx_3_4_0.hx_confirm "Delete this app?"
+      ]
+      [text "x"]
+  if canEdit then
+    div
+      [class "app-tile-wrapper"]
+      [tileContent, div [class "tile-actions"] [deleteBtn]]
+  else tileContent
+
+portal.addTileButton2 : tapegram_html_2_0_0.Html
+portal.addTileButton2 =
+  use Text ++
+  use tapegram_html_2_0_0 button span text
+  use tapegram_html_2_1_0.Attribute class id
+  base = portal.basePath
+  button
+    [ class "add-tile"
+    , hx_get (base ++ "/apps/new")
+    , hx_target "#modal-container"
+    , tapegram_htmx_3_4_0.hx_swap tapegram_htmx_3_4_0.hx_swap.AdjacentHtml.InnerHtml Optional.None
+    ]
+    [span [class "add-tile-plus"] [text "+"]]
+
+portal.addAppModalHtml2 : tapegram_html_2_0_0.Html
+portal.addAppModalHtml2 =
+  use Text ++
+  use tapegram_html_2_0_0 div h2 form label input button text
+  use tapegram_html_2_1_0.Attribute class type_ name placeholder required style
+  base = portal.basePath
+  div
+    [class "modal-overlay", tapegram_htmx_3_4_0.hx_on "click" "if(event.target === this) this.remove()"]
+    [ div [class "modal"]
+        [ h2 [] [text "Add New App"]
+        , form
+            [ hx_post (base ++ "/apps")
+            , tapegram_htmx_3_4_0.hx_swap tapegram_htmx_3_4_0.hx_swap.AdjacentHtml.InnerHtml Optional.None
+            , hx_target "#modal-container"
+            ]
+            [ div [class "form-group"]
+                [ label [] [text "App Name"]
+                , input [type_ "text", name "name", placeholder "My App", required true]
+                ]
+            , div [class "form-group"]
+                [ label [] [text "Image URL"]
+                , input [type_ "url", name "imageUrl", placeholder "https://example.com/icon.png", required true]
+                ]
+            , div [class "form-group"]
+                [ label [] [text "App URL"]
+                , input [type_ "url", name "url", placeholder "https://example.com", required true]
+                ]
+            , div [style "display: flex; gap: 1rem; margin-top: 1.5rem"]
+                [ button [type_ "button", class "btn btn-secondary", style "flex: 1", tapegram_htmx_3_4_0.hx_on "click" "document.querySelector('.modal-overlay').remove()"] [text "Cancel"]
+                , button [type_ "submit", class "btn btn-primary", style "flex: 1"] [text "Add App"]
+                ]
+            ]
+        ]
+    ]
+
+portal.appGrid2 : [portal.AppTile] -> Boolean -> tapegram_html_2_0_0.Html
+portal.appGrid2 tiles canEdit =
+  use List :+
+  tileElements = List.map (tile -> portal.appTileComponent2 tile canEdit) tiles
+  gridContent = if canEdit then tileElements :+ portal.addTileButton2 else tileElements
+  tapegram_html_2_0_0.div
+    [tapegram_html_2_1_0.Attribute.class "app-grid"] gridContent
+
+portal.main2 :
+  Database
+  -> HttpRequest
+  ->{Exception, Storage, Remote, Random, Log} HttpResponse
+portal.main2 db req =
+  portal.Auth.run db do
+    portal.AppTileStorage.run db do
+      Route.run (portal.auth.routes Route.<|> portal.app.routes) req
+
+portal.deployLocal2 : '{IO, Exception} URI
+portal.deployLocal2 = main.local.serve do
+  use portal appName
+  env = Environment.default()
+  db = Database.named appName
+  Database.assign db env
+  hash = deployHttp env (portal.main2 db)
+  name = ServiceName.named appName
+  ServiceName.assign name hash

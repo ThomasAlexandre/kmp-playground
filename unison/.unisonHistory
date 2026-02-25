@@ -1,3 +1,9 @@
+run portal.deployLocal2
+update
+run portal.deployLocal2
+update
+run portal.deployLocal2
+update
 run portal.deployLocal
 update
 names href

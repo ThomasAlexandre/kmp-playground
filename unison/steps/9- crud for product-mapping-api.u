@@ -1,0 +1,213 @@
+-- Product Mapping API
+-- Maps store-specific product references to universal barcodes
+
+-- The composite key for a product mapping: (storeId, storeReference)
+type ProductMappingId = ProductMappingId Nat Text
+
+ProductMappingId.storeId : ProductMappingId -> Nat
+ProductMappingId.storeId = cases ProductMappingId sid _ -> sid
+
+ProductMappingId.storeReference : ProductMappingId -> Text
+ProductMappingId.storeReference = cases ProductMappingId _ ref -> ref
+
+ProductMappingId.toText : ProductMappingId -> Text
+ProductMappingId.toText = cases ProductMappingId sid ref -> Nat.toText sid Text.++ ":" Text.++ ref
+
+-- The product mapping entity
+type ProductMapping = {
+  mappingStoreId : Nat,
+  mappingStoreReference : Text,
+  mappingUniversalBarcode : Text
+}
+
+ProductMapping.id : ProductMapping -> ProductMappingId
+ProductMapping.id mapping = ProductMappingId (mappingStoreId mapping) (mappingStoreReference mapping)
+
+ProductMapping.decoder : '{Decoder} ProductMapping
+ProductMapping.decoder = do
+  use Decoder text
+  use object at!
+  storeId = at! "storeId" Decoder.nat
+  storeReference = at! "storeReference" text
+  universalBarcode = at! "universalBarcode" text
+  ProductMapping storeId storeReference universalBarcode
+
+ProductMapping.toJson : ProductMapping -> Json
+ProductMapping.toJson mapping =
+  object.empty
+    |> addNat "storeId" (mappingStoreId mapping)
+    |> addText "storeReference" (mappingStoreReference mapping)
+    |> addText "universalBarcode" (mappingUniversalBarcode mapping)
+
+-- Storage ability for product mappings
+ability ProductMappingStorage where
+  getMapping : ProductMappingId ->{ProductMappingStorage} Optional ProductMapping
+  upsertMapping : ProductMapping ->{ProductMappingStorage} ()
+  deleteMapping : ProductMappingId ->{ProductMappingStorage} ()
+  getMappingsByStore : Nat ->{ProductMappingStorage} [ProductMapping]
+  getAllMappings : '{ProductMappingStorage} [ProductMapping]
+
+-- Storage handler implementation using OrderedTable with composite key
+ProductMappingStorage.run : Database -> '{g, ProductMappingStorage} a ->{g, Remote} a
+ProductMappingStorage.run db computation =
+  use List filter map
+  use OrderedTable toStream
+  use Stream toList
+  table : OrderedTable (Nat, Text) ProductMapping
+  table = OrderedTable.named db "product-mappings" Universal.ordering
+  go : Request {ProductMappingStorage} a ->{g, Remote} a
+  go = cases
+    { a } -> a
+    { ProductMappingStorage.getMapping (ProductMappingId sid ref) -> resume } ->
+      result = OrderedTable.tryRead table (sid, ref)
+      handle resume result with go
+    { ProductMappingStorage.upsertMapping mapping -> resume } ->
+      key = (mappingStoreId mapping, mappingStoreReference mapping)
+      OrderedTable.write table key mapping
+      handle resume() with go
+    { ProductMappingStorage.deleteMapping (ProductMappingId sid ref) -> resume } ->
+      OrderedTable.delete table (sid, ref)
+      handle resume() with go
+    { ProductMappingStorage.getMappingsByStore storeId -> resume } ->
+      mappings = toList (toStream table) |> map at2
+      filtered = filter (m -> mappingStoreId m Nat.== storeId) mappings
+      handle resume filtered with go
+    { ProductMappingStorage.getAllMappings () -> resume } ->
+      mappings = toList (toStream table) |> map at2
+      handle resume mappings with go
+  handle computation() with go
+
+-- Helper to parse storeId from text
+parseStoreIdMapping : Text -> Optional Nat
+parseStoreIdMapping t = Nat.fromText t
+
+-- Routes for the product mapping API
+productMappings.routes : '{Route, Exception, ProductMappingStorage, Log} ()
+productMappings.routes =
+  use Nat toText
+  use List head
+  use Optional None
+  use Parser / nat s
+  use Route <|>
+  use ProductMapping decoder toJson
+  use ProductMappingStorage getMapping upsertMapping deleteMapping getMappingsByStore
+  use Text ++
+
+  health = do
+    noCapture GET (s "health")
+    ok.text "ok"
+
+  -- GET /mappings - get all mappings
+  getAllMappingsRoute = do
+    noCapture GET (s "mappings")
+    info "Getting all product mappings" []
+    mappings = getAllMappings()
+    json = Json.array (List.map toJson mappings)
+    ok.json json
+
+  -- GET /mappings/store/:storeId - get mappings for a specific store
+  getMappingsByStoreRoute = do
+    storeId = route GET (s "mappings" / s "store" / nat)
+    info "Getting mappings for store" [("storeId", toText storeId)]
+    mappings = getMappingsByStore storeId
+    json = Json.array (List.map toJson mappings)
+    ok.json json
+
+  -- GET /mappings/lookup?storeId=X&ref=Y - get specific mapping using query params
+  getMappingRoute = do
+    noCapture GET (s "mappings" / s "lookup")
+    storeIds = queryParameter "storeId"
+    refs = queryParameter "ref"
+    match (head storeIds, head refs) with
+      (None, _) -> badRequest.text "Missing storeId query parameter"
+      (_, None) -> badRequest.text "Missing ref query parameter"
+      (Some storeIdText, Some storeRef) ->
+        match parseStoreIdMapping storeIdText with
+          None -> badRequest.text "Invalid storeId, expected number"
+          Some storeId ->
+            info "Getting mapping" [("storeId", toText storeId), ("ref", storeRef)]
+            match getMapping (ProductMappingId storeId storeRef) with
+              Some mapping -> ok.json (toJson mapping)
+              None -> notFound.text ("Mapping not found for store " ++ toText storeId ++ " reference " ++ storeRef)
+
+  -- POST /mappings - create or update a mapping
+  createMapping = do
+    noCapture POST (s "mappings")
+    mapping = decodeJson decoder
+    info "Creating/updating mapping" [("storeId", toText (mappingStoreId mapping)), ("storeReference", mappingStoreReference mapping)]
+    upsertMapping mapping
+    setStatus (Status 201 "Created")
+    ok.json (toJson mapping)
+
+  -- PUT /mappings - update a mapping (full entity in body)
+  updateMapping = do
+    noCapture PUT (s "mappings")
+    mapping = decodeJson decoder
+    storeId = mappingStoreId mapping
+    storeRef = mappingStoreReference mapping
+    info "Updating mapping" [("storeId", toText storeId), ("storeReference", storeRef)]
+    match getMapping (ProductMappingId storeId storeRef) with
+      Some _ ->
+        upsertMapping mapping
+        ok.json (toJson mapping)
+      None -> notFound.text ("Mapping not found for store " ++ toText storeId ++ " reference " ++ storeRef)
+
+  -- DELETE /mappings?storeId=X&ref=Y - delete a mapping using query params
+  deleteMappingRoute = do
+    noCapture DELETE (s "mappings")
+    storeIds = queryParameter "storeId"
+    refs = queryParameter "ref"
+    match (head storeIds, head refs) with
+      (None, _) -> badRequest.text "Missing storeId query parameter"
+      (_, None) -> badRequest.text "Missing ref query parameter"
+      (Some storeIdText, Some storeRef) ->
+        match parseStoreIdMapping storeIdText with
+          None -> badRequest.text "Invalid storeId, expected number"
+          Some storeId ->
+            info "Deleting mapping" [("storeId", toText storeId), ("ref", storeRef)]
+            match getMapping (ProductMappingId storeId storeRef) with
+              Some _ ->
+                deleteMapping (ProductMappingId storeId storeRef)
+                ok.text "Deleted"
+              None -> notFound.text ("Mapping not found for store " ++ toText storeId ++ " reference " ++ storeRef)
+
+  health <|> getMappingsByStoreRoute <|> getMappingRoute <|> getAllMappingsRoute <|> createMapping <|> updateMapping <|> deleteMappingRoute
+
+-- Main entry point
+productMappings.main : Database -> HttpRequest ->{Exception, Storage, Remote, Log} HttpResponse
+productMappings.main db req = ProductMappingStorage.run db do Route.run productMappings.routes req
+
+-- Main with CORS support
+productMappings.mainWithCors : Database -> HttpRequest ->{Exception, Storage, Remote, Log} HttpResponse
+productMappings.mainWithCors db req =
+  if isOptionsMethod req
+  then addCorsHeaders (unison_http_14_0_0.HttpResponse.ok Body.empty)
+  else addCorsHeaders (productMappings.main db req)
+
+-- Setup cloud database (run once before deploying)
+productMappings.setupCloudDb : '{IO, Exception} ()
+productMappings.setupCloudDb = Cloud.main do
+  env = Environment.default()
+  db = Database.named "product-mappings-db"
+  Database.assign db env
+
+-- Deploy to cloud
+productMappings.deployCloud : '{IO, Exception} ServiceHash HttpRequest HttpResponse
+productMappings.deployCloud = Cloud.main do
+  env = Environment.default()
+  db = Database.named "product-mappings-db"
+  Database.assign db env
+  hash = deployHttp env (productMappings.mainWithCors db)
+  name = ServiceName.named "product-mapping-api"
+  _ = ServiceName.assign name hash
+  hash
+
+-- Deploy locally for testing
+productMappings.deployLocal : '{IO, Exception} URI
+productMappings.deployLocal = main.local.serve do
+  env = Environment.default()
+  db = Database.named "product-mappings-db"
+  Database.assign db env
+  hash = deployHttp env (productMappings.mainWithCors db)
+  name = ServiceName.named "product-mapping-api"
+  ServiceName.assign name hash

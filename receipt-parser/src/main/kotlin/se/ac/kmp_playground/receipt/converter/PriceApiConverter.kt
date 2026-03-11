@@ -15,7 +15,9 @@ import se.ac.kmp_playground.receipt.model.*
  * Converts parsed receipts into price-api request format
  */
 class PriceApiConverter(
-    private val storesApiUrl: String = DEFAULT_STORES_API_URL
+    private val storesApiUrl: String = DEFAULT_STORES_API_URL,
+    private val productMappingApiUrl: String = DEFAULT_PRODUCT_MAPPING_API_URL,
+    private val useProductMappings: Boolean = false
 ) {
     private val client = HttpClient(CIO) {
         install(ContentNegotiation) {
@@ -26,8 +28,12 @@ class PriceApiConverter(
     // Cache for store lookups by key
     private val storeCache = mutableMapOf<String, Store?>()
 
+    // Cache for product mapping lookups (storeId:articleNumber -> barcode)
+    private val productMappingCache = mutableMapOf<String, String?>()
+
     companion object {
         const val DEFAULT_STORES_API_URL = "https://thomasalexandre.unison-services.cloud/s/stores-api"
+        const val DEFAULT_PRODUCT_MAPPING_API_URL = "https://thomasalexandre.unison-services.cloud/s/product-mapping-api"
 
         // Minimum length for EAN/UPC barcodes (shorter codes are store-specific)
         private const val MIN_BARCODE_LENGTH = 8
@@ -36,8 +42,8 @@ class PriceApiConverter(
     /**
      * Convert a parsed receipt to a list of price-api requests
      */
-    fun convert(receipt: ParsedReceipt): List<PriceApiRequest> {
-        val storeId = resolveStoreId(receipt)
+    fun convert(receipt: ParsedReceipt, storeIdOverride: String? = null): List<PriceApiRequest> {
+        val storeId = storeIdOverride ?: resolveStoreId(receipt)
 
         return receipt.items.map { item ->
             PriceApiRequest(
@@ -98,6 +104,7 @@ class PriceApiConverter(
 
     /**
      * Create product identifier - barcode for standard products, store-specific for internal codes
+     * For ICA receipts (when useProductMappings is enabled), tries to look up the universal barcode
      */
     private fun createProductIdentifier(item: ReceiptItem, storeId: String): ProductIdentifier {
         val code = item.articleNumber
@@ -109,12 +116,59 @@ class PriceApiConverter(
                 code = code
             )
         } else {
+            // For ICA receipts, try to look up the universal barcode from product-mapping-api
+            if (useProductMappings) {
+                val universalBarcode = lookupProductMapping(storeId, code)
+                if (universalBarcode != null) {
+                    return ProductIdentifier(
+                        type = "barcode",
+                        code = universalBarcode
+                    )
+                }
+            }
+
+            // Fallback to store-specific code
             ProductIdentifier(
                 type = "store_specific",
                 code = code,
                 storeId = storeId
             )
         }
+    }
+
+    /**
+     * Look up universal barcode from product-mapping-api
+     */
+    private fun lookupProductMapping(storeId: String, articleNumber: String): String? {
+        val cacheKey = "$storeId:$articleNumber"
+
+        // Check cache first
+        if (productMappingCache.containsKey(cacheKey)) {
+            return productMappingCache[cacheKey]
+        }
+
+        // Query the API
+        val barcode = runBlocking {
+            try {
+                val response = client.get("$productMappingApiUrl/mappings/lookup") {
+                    parameter("storeId", storeId)
+                    parameter("ref", articleNumber)
+                }
+                if (response.status == HttpStatusCode.OK) {
+                    val mapping = response.body<ProductMapping>()
+                    mapping.universalBarcode
+                } else {
+                    null
+                }
+            } catch (e: Exception) {
+                System.err.println("Warning: Failed to lookup product mapping for $articleNumber: ${e.message}")
+                null
+            }
+        }
+
+        // Cache the result
+        productMappingCache[cacheKey] = barcode
+        return barcode
     }
 
     /**
@@ -171,7 +225,10 @@ class PriceApiConverter(
  * Extension function to convert receipts easily
  */
 fun ParsedReceipt.toPriceApiRequests(
-    storesApiUrl: String = PriceApiConverter.DEFAULT_STORES_API_URL
+    storesApiUrl: String = PriceApiConverter.DEFAULT_STORES_API_URL,
+    productMappingApiUrl: String = PriceApiConverter.DEFAULT_PRODUCT_MAPPING_API_URL,
+    useProductMappings: Boolean = false,
+    storeIdOverride: String? = null
 ): List<PriceApiRequest> {
-    return PriceApiConverter(storesApiUrl).convert(this)
+    return PriceApiConverter(storesApiUrl, productMappingApiUrl, useProductMappings).convert(this, storeIdOverride)
 }

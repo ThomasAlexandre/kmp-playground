@@ -94,6 +94,8 @@ class ParseCommand : CliktCommand(name = "parse") {
     private val priceApiFormat by option("--price-api")
         .flag(default = false)
 
+    private val storeId by option("--store-id", help = "Override store ID for product mapping lookups")
+
     private val parserType by option("-p", "--parser", help = "Parser type: ica (default), hemkop")
         .default("ica")
 
@@ -113,7 +115,12 @@ class ParseCommand : CliktCommand(name = "parse") {
                 echo("  Items: ${receipt.items.size}")
 
                 val outputJson = if (priceApiFormat) {
-                    val requests = receipt.toPriceApiRequests()
+                    // Use product mappings for ICA receipts to resolve artikelnummer to barcodes
+                    val useProductMappings = ParserType.fromString(parserType) == ParserType.ICA
+                    val requests = receipt.toPriceApiRequests(
+                        useProductMappings = useProductMappings,
+                        storeIdOverride = storeId
+                    )
                     json.encodeToString(requests)
                 } else {
                     json.encodeToString(receipt)
@@ -170,14 +177,12 @@ class UploadCommand : CliktCommand(name = "upload") {
                 echo("  Date: ${receipt.date}")
                 echo("  Items: ${receipt.items.size}")
 
-                val requests = receipt.toPriceApiRequests()
-
-                // Apply store ID override if specified
-                val finalRequests = if (storeId != null) {
-                    requests.map { it.copy(storeId = storeId!!) }
-                } else {
-                    requests
-                }
+                // Use product mappings for ICA receipts to resolve artikelnummer to barcodes
+                val useProductMappings = ParserType.fromString(parserType) == ParserType.ICA
+                val finalRequests = receipt.toPriceApiRequests(
+                    useProductMappings = useProductMappings,
+                    storeIdOverride = storeId
+                )
 
                 if (dryRun) {
                     echo("  Would upload ${finalRequests.size} price records:")

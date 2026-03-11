@@ -7,7 +7,8 @@
       "mcp__unison__list-project-definitions",
       "mcp__unison__search-definitions-by-name",
       "mcp__unison__docs",
-      "mcp__unison__list-local-projects"
+      "mcp__unison__list-local-projects",
+      "Bash(curl:*)"
     ]
   }
 }

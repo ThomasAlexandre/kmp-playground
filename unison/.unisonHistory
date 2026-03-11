@@ -1,3 +1,21 @@
+run prices.deployCloud
+claude
+run prices.deployCloud
+update
+run productMappings.deployCloud
+update
+run productMappings.deployCloud
+productMappings.deployCloud
+update
+run portal.deployCloud
+run portal.setupCloudDb
+update
+run portal.deployCloud
+update
+run portal.deployCloud
+auth.login
+run portal.deployCloud
+update
 run portal.deployLocal2
 update
 run portal.deployLocal2

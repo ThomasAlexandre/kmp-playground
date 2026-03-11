@@ -1,0 +1,115 @@
+-- New routes for store-specific product lookups
+
+-- GET /prices/store-product?storeId=X&code=Y - Get latest price for a store-specific product
+getLatestPriceStoreSpecific : '{Route, PriceStorage, Exception, Log} ()
+getLatestPriceStoreSpecific = do
+  use Parser / s
+  use Optional None Some
+  use List head
+  noCapture GET (s "prices" / s "store-product")
+  storeIds = queryParameter "storeId"
+  codes = queryParameter "code"
+  match (head storeIds, head codes) with
+    (None, _) -> badRequest.text "Missing storeId query parameter"
+    (_, None) -> badRequest.text "Missing code query parameter"
+    (Some storeIdText, Some code) ->
+      match parseStoreId storeIdText with
+        None -> badRequest.text "Invalid storeId, expected number"
+        Some storeId ->
+          productId = StoreSpecific storeId code
+          match getLatestPrice productId storeId with
+            None -> notFound.text "Price not found"
+            Some (instant, record) ->
+              json = Json.object [
+                ("product", ProductIdentifier.toJson productId),
+                ("recordedAt", Json.text (Instant.toText instant)),
+                ("price", PriceRecord.toJson record)
+              ]
+              ok.json json
+
+-- GET /prices/store-product/history?storeId=X&code=Y - Get price history for a store-specific product
+getPriceHistoryStoreSpecific : '{Route, PriceStorage, Exception, Log} ()
+getPriceHistoryStoreSpecific = do
+  use Parser / s
+  use List head map
+  use Optional None Some
+  noCapture GET (s "prices" / s "store-product" / s "history")
+  storeIds = queryParameter "storeId"
+  codes = queryParameter "code"
+  match (head storeIds, head codes) with
+    (None, _) -> badRequest.text "Missing storeId query parameter"
+    (_, None) -> badRequest.text "Missing code query parameter"
+    (Some storeIdText, Some code) ->
+      match parseStoreId storeIdText with
+        None -> badRequest.text "Invalid storeId, expected number"
+        Some storeId ->
+          productId = StoreSpecific storeId code
+          history = getPriceHistory productId storeId
+          entryToJson = cases (instant, record) -> Json.object [
+            ("recordedAt", Json.text (Instant.toText instant)),
+            ("price", PriceRecord.toJson record)
+          ]
+          ok.json (Json.array (map entryToJson history))
+
+-- Updated routes with new store-specific endpoints
+prices.routes : '{Route, PriceStorage, Exception, Log} ()
+prices.routes =
+  use Json array object
+  use List head map
+  use Parser / s
+  use Route <|>
+  use Optional None Some
+  health = do
+    noCapture GET (s "health")
+    ok.text "ok"
+  createPrice = do
+    noCapture POST (s "prices")
+    request = decodeJson RecordPriceRequest.decoder
+    info "Recording price" [("storeId", Nat.toText (RecordPriceRequest.storeId request)), ("recordedAt", Instant.toText (RecordPriceRequest.recordedAt request))]
+    recordPrice
+      (RecordPriceRequest.product request)
+      (StoreId (RecordPriceRequest.storeId request))
+      (RecordPriceRequest.recordedAt request)
+      (RecordPriceRequest.priceRecord request)
+    setStatus (Status 201 "Created")
+    ok.json (object [("status", Json.text "created")])
+  getLatestPriceBarcode = do
+    code = route GET (s "prices" / s "barcode" / Parser.text)
+    storeIds = queryParameter "storeId"
+    match head storeIds with
+      None -> badRequest.text "Missing storeId query parameter"
+      Some storeIdText ->
+        match parseStoreId storeIdText with
+          None -> badRequest.text "Invalid storeId, expected number"
+          Some storeId ->
+            match getLatestPrice (UniversalBarcode code) storeId with
+              None -> notFound.text "Price not found"
+              Some (instant, record) ->
+                json = object [("recordedAt", Json.text (Instant.toText instant)), ("price", PriceRecord.toJson record)]
+                ok.json json
+  getPriceHistoryBarcode = do
+    code = route GET (s "prices" / s "barcode" / Parser.text / s "history")
+    storeIds = queryParameter "storeId"
+    match head storeIds with
+      None -> badRequest.text "Missing storeId query parameter"
+      Some storeIdText ->
+        match parseStoreId storeIdText with
+          None -> badRequest.text "Invalid storeId, expected number"
+          Some storeId ->
+            history = getPriceHistory (UniversalBarcode code) storeId
+            entryToJson = cases (instant, record) -> object [("recordedAt", Json.text (Instant.toText instant)), ("price", PriceRecord.toJson record)]
+            ok.json (array (map entryToJson history))
+  comparePricesBarcode = do
+    code = route GET (s "prices" / s "barcode" / Parser.text / s "compare")
+    prices = getPricesAcrossStores (UniversalBarcode code)
+    entryToJson = cases (StoreId sid, instant, record) -> object [("storeId", Json.text (Nat.toText sid)), ("recordedAt", Json.text (Instant.toText instant)), ("price", PriceRecord.toJson record)]
+    ok.json (array (map entryToJson prices))
+  getStorePricesRoute = do
+    storeIdText = route GET (s "stores" / Parser.text / s "prices")
+    match parseStoreId storeIdText with
+      None -> badRequest.text "Invalid storeId, expected number"
+      Some storeId ->
+        prices = getLatestPricesAtStore storeId
+        entryToJson = cases (productId, instant, record) -> object [("product", ProductIdentifier.toJson productId), ("recordedAt", Json.text (Instant.toText instant)), ("price", PriceRecord.toJson record)]
+        ok.json (array (map entryToJson prices))
+  health <|> createPrice <|> getPriceHistoryStoreSpecific <|> getLatestPriceStoreSpecific <|> getPriceHistoryBarcode <|> comparePricesBarcode <|> getLatestPriceBarcode <|> getStorePricesRoute

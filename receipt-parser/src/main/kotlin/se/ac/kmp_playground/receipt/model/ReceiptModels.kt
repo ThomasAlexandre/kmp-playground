@@ -70,3 +70,14 @@ data class Store(
     val city: String,
     val imageUrl: String
 )
+
+/**
+ * Product mapping from product-mapping-api
+ * Maps store-specific article numbers to universal barcodes
+ */
+@Serializable
+data class ProductMapping(
+    val storeId: Int,
+    val storeReference: String,
+    val universalBarcode: String
+)

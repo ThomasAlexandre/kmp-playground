@@ -1,3 +1,13 @@
+run stores.deployCloud
+update
+run stores.deployCloud
+update
+run stores.deployCloud
+update
+run stores.openapi.spec
+stores.openapi.spec
+update
+exit
 run prices.deployCloud
 claude
 run prices.deployCloud

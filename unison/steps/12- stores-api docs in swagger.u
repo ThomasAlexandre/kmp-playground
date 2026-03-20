@@ -1,0 +1,82 @@
+use lib.unison_cloud_27_2_0
+use lib.unison_routes_7_0_2
+use lib.unison_json_1_3_5
+
+stores.openapi.docsHtml : Text
+stores.openapi.docsHtml =
+  use Text ++
+  "<!DOCTYPE html><html><head>"
+    ++ "<title>Stores API</title>"
+    ++ "<meta charset=\"utf-8\"/>"
+    ++ "<link rel=\"stylesheet\" href=\"https://unpkg.com/swagger-ui-dist/swagger-ui.css\">"
+    ++ "</head><body>"
+    ++ "<div id=\"swagger-ui\"></div>"
+    ++ "<script src=\"https://unpkg.com/swagger-ui-dist/swagger-ui-bundle.js\"></script>"
+    ++ "<script>window.onload=function(){"
+    ++ "SwaggerUIBundle({url:\"openapi.json\",dom_id:\"#swagger-ui\","
+    ++ "presets:[SwaggerUIBundle.presets.apis,SwaggerUIBundle.SwaggerUIStandalonePreset],"
+    ++ "layout:\"BaseLayout\"})}"
+    ++ "</script></body></html>"
+
+stores.routes : '{Route, Exception, StoreStorage, Log} ()
+stores.routes =
+  use Parser / s
+  use Text ++
+  use Route <|>
+  use Optional None Some
+
+  health = do
+    noCapture GET (s "health")
+    ok.text "ok"
+
+  getAllStores = do
+    noCapture GET (s "stores")
+    info "Getting all stores" []
+    stores = StoreStorage.getAll()
+    json = Json.array (List.map Store.toJson stores)
+    ok.json json
+
+  getStoreById = do
+    storeId = route GET (s "stores" / Parser.nat)
+    info "Getting store" [("id", Nat.toText storeId)]
+    match StoreStorage.get (StoreId storeId) with
+      Some store -> ok.json (Store.toJson store)
+      None -> notFound.text ("Store not found: " ++ Nat.toText storeId)
+
+  createStore = do
+    noCapture POST (s "stores")
+    store = decodeJson Store.decoder
+    info "Creating store" [("id", Nat.toText (Store.id store))]
+    StoreStorage.upsert store
+    setStatus (Status 201 "Created")
+    ok.json (Store.toJson store)
+
+  updateStore = do
+    storeId = route PUT (s "stores" / Parser.nat)
+    store = decodeJson Store.decoder
+    info "Updating store" [("id", Nat.toText storeId)]
+    match StoreStorage.get (StoreId storeId) with
+      Some _ ->
+        updatedStore = Store storeId (Store.key store) (Store.name store) (Store.lon store) (Store.lat store) (Store.address store) (Store.postalCode store) (Store.city store) (Store.imageUrl store)
+        StoreStorage.upsert updatedStore
+        ok.json (Store.toJson updatedStore)
+      None -> notFound.text ("Store not found: " ++ Nat.toText storeId)
+
+  deleteStore = do
+    storeId = route DELETE (s "stores" / Parser.nat)
+    info "Deleting store" [("id", Nat.toText storeId)]
+    match StoreStorage.get (StoreId storeId) with
+      Some _ ->
+        StoreStorage.delete (StoreId storeId)
+        ok.text "Deleted"
+      None -> notFound.text ("Store not found: " ++ Nat.toText storeId)
+
+  openApiJson = do
+    noCapture GET (s "openapi.json")
+    ok.json stores.openapi.spec
+
+  docs = do
+    noCapture GET (s "docs")
+    ok.html stores.openapi.docsHtml
+
+  health <|> getAllStores <|> getStoreById <|> createStore <|> updateStore <|> deleteStore <|> openApiJson <|> docs

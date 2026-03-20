@@ -1,0 +1,171 @@
+use lib.kingsleyh_openapi_1_0_7
+use lib.unison_cloud_27_2_0
+use lib.unison_routes_7_0_2
+use lib.unison_json_1_3_5
+
+-- Helper to build an inline object SchemaOrRef from a property list and required fields
+stores.openapi.objectSchemaWith : [(Text, v3_0_3.SchemaOrRef)] -> [Text] -> v3_0_3.SchemaOrRef
+stores.openapi.objectSchemaWith props required =
+  use Optional None
+  properties = Map.fromList props
+  schemaType = v3_0_3.JsonSchemaType.ObjectSchema properties None
+  v3_0_3.SchemaOrRef.InlineSchema (v3_0_3.JsonSchema.JsonSchema schemaType None None None None None None false None false None None None None None false None None required [] false None false false None None None false)
+
+-- Schema for a Store object
+stores.openapi.storeSchemaRef : v3_0_3.SchemaOrRef
+stores.openapi.storeSchemaRef =
+  stores.openapi.objectSchemaWith [
+    ("id",         v3_0_3.integerSchema),
+    ("key",        v3_0_3.stringSchema),
+    ("name",       v3_0_3.stringSchema),
+    ("lon",        v3_0_3.numberSchema),
+    ("lat",        v3_0_3.numberSchema),
+    ("address",    v3_0_3.stringSchema),
+    ("postalCode", v3_0_3.stringSchema),
+    ("city",       v3_0_3.stringSchema),
+    ("imageUrl",   v3_0_3.stringSchema)
+  ] ["id","key","name","lon","lat","address","postalCode","city","imageUrl"]
+
+-- Schema for error responses
+stores.openapi.errorSchemaRef : v3_0_3.SchemaOrRef
+stores.openapi.errorSchemaRef =
+  stores.openapi.objectSchemaWith [
+    ("message", v3_0_3.stringSchema)
+  ] ["message"]
+
+-- Path builders
+stores.openapi.storesPath : openapi.routes.PathSpec
+stores.openapi.storesPath = openapi.routes.root |> openapi.routes.segment "stores"
+
+stores.openapi.storeByIdPath : openapi.routes.PathSpec
+stores.openapi.storeByIdPath = openapi.routes.root |> openapi.routes.segment "stores" |> openapi.routes.param "id"
+
+-- Route specs
+-- listPattern   : PathSpec -> Text(summary) -> Text(tag) -> SchemaOrRef(response) -> SchemaOrRef(error) -> RouteSpec
+stores.openapi.listStores : openapi.routes.RouteSpec
+stores.openapi.listStores =
+  openapi.routes.listPattern
+    stores.openapi.storesPath
+    "Get all stores"
+    "Stores"
+    stores.openapi.storeSchemaRef
+    stores.openapi.errorSchemaRef
+
+-- getByIdPattern : PathSpec -> Text(summary) -> Text(idParam) -> Text(tag) -> SchemaOrRef(response) -> SchemaOrRef(error) -> RouteSpec
+stores.openapi.getStore : openapi.routes.RouteSpec
+stores.openapi.getStore =
+  openapi.routes.getByIdPattern
+    stores.openapi.storeByIdPath
+    "Get store by ID"
+    "id"
+    "Stores"
+    stores.openapi.storeSchemaRef
+    stores.openapi.errorSchemaRef
+
+-- createPattern  : PathSpec -> Text(summary) -> SchemaOrRef(request) -> Text(tag) -> SchemaOrRef(response) -> SchemaOrRef(error) -> RouteSpec
+stores.openapi.createStore : openapi.routes.RouteSpec
+stores.openapi.createStore =
+  openapi.routes.createPattern
+    stores.openapi.storesPath
+    "Create a new store"
+    stores.openapi.storeSchemaRef
+    "Stores"
+    stores.openapi.storeSchemaRef
+    stores.openapi.errorSchemaRef
+
+-- updatePattern  : PathSpec -> Text(summary) -> Text(idParam) -> SchemaOrRef(request) -> Text(tag) -> SchemaOrRef(response) -> SchemaOrRef(error) -> RouteSpec
+stores.openapi.updateStore : openapi.routes.RouteSpec
+stores.openapi.updateStore =
+  openapi.routes.updatePattern
+    stores.openapi.storeByIdPath
+    "Update a store by ID"
+    "id"
+    stores.openapi.storeSchemaRef
+    "Stores"
+    stores.openapi.storeSchemaRef
+    stores.openapi.errorSchemaRef
+
+-- deletePattern  : PathSpec -> Text(summary) -> Text(idParam) -> Text(tag) -> SchemaOrRef(error) -> RouteSpec
+stores.openapi.deleteStore : openapi.routes.RouteSpec
+stores.openapi.deleteStore =
+  openapi.routes.deletePattern
+    stores.openapi.storeByIdPath
+    "Delete a store by ID"
+    "id"
+    "Stores"
+    stores.openapi.errorSchemaRef
+
+-- Complete OpenAPI spec as JSON
+stores.openapi.spec : Json
+stores.openapi.spec =
+  v3_0_3.spec "Stores API" "1.0.0"
+    |> openapi.routes.addRoutes [
+      stores.openapi.listStores,
+      stores.openapi.getStore,
+      stores.openapi.createStore,
+      stores.openapi.updateStore,
+      stores.openapi.deleteStore
+    ]
+    |> v3_0_3.toJson
+
+-- Updated routes including GET /openapi.json
+stores.routes : '{Route, Exception, StoreStorage, Log} ()
+stores.routes =
+  use Parser / s
+  use Text ++
+  use Route <|>
+
+  health = do
+    noCapture GET (s "health")
+    ok.text "ok"
+
+  getAllStores = do
+    noCapture GET (s "stores")
+    info "Getting all stores" []
+    stores = StoreStorage.getAll()
+    json = Json.array (List.map Store.toJson stores)
+    ok.json json
+
+  getStoreById = do
+    use Optional None Some
+    storeId = route GET (s "stores" / Parser.nat)
+    info "Getting store" [("id", Nat.toText storeId)]
+    match StoreStorage.get (StoreId storeId) with
+      Some store -> ok.json (Store.toJson store)
+      None -> notFound.text ("Store not found: " ++ Nat.toText storeId)
+
+  createStore = do
+    noCapture POST (s "stores")
+    store = decodeJson Store.decoder
+    info "Creating store" [("id", Nat.toText (Store.id store))]
+    StoreStorage.upsert store
+    setStatus (Status 201 "Created")
+    ok.json (Store.toJson store)
+
+  updateStore = do
+    use Optional None Some
+    storeId = route PUT (s "stores" / Parser.nat)
+    store = decodeJson Store.decoder
+    info "Updating store" [("id", Nat.toText storeId)]
+    match StoreStorage.get (StoreId storeId) with
+      Some _ ->
+        updatedStore = Store storeId (Store.key store) (Store.name store) (Store.lon store) (Store.lat store) (Store.address store) (Store.postalCode store) (Store.city store) (Store.imageUrl store)
+        StoreStorage.upsert updatedStore
+        ok.json (Store.toJson updatedStore)
+      None -> notFound.text ("Store not found: " ++ Nat.toText storeId)
+
+  deleteStore = do
+    use Optional None Some
+    storeId = route DELETE (s "stores" / Parser.nat)
+    info "Deleting store" [("id", Nat.toText storeId)]
+    match StoreStorage.get (StoreId storeId) with
+      Some _ ->
+        StoreStorage.delete (StoreId storeId)
+        ok.text "Deleted"
+      None -> notFound.text ("Store not found: " ++ Nat.toText storeId)
+
+  openApiJson = do
+    noCapture GET (s "openapi.json")
+    ok.json stores.openapi.spec
+
+  health <|> getAllStores <|> getStoreById <|> createStore <|> updateStore <|> deleteStore <|> openApiJson
